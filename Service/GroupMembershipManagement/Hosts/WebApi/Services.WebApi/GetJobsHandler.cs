@@ -1,5 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using Microsoft.AspNetCore.OData.Query;
+using Models;
 using Repositories.Contracts;
 using Services.Contracts;
 using Services.Messages.Requests;
@@ -10,47 +12,64 @@ namespace Services
 {
     public class GetJobsHandler : RequestHandlerBase<GetJobsRequest, GetJobsResponse>
     {
-        private readonly ISyncJobRepository _syncJobRepository;
+        private readonly IDatabaseSyncJobsRepository _databaseSyncJobsRepository;
         private readonly IGraphGroupRepository _graphGroupRepository;
         public GetJobsHandler(ILoggingRepository loggingRepository,
-                              ISyncJobRepository syncJobRepository,
+                              IDatabaseSyncJobsRepository databaseSyncJobsRepository,
                               IGraphGroupRepository graphGroupRepository) : base(loggingRepository)
         {
-            _syncJobRepository = syncJobRepository ?? throw new ArgumentNullException(nameof(syncJobRepository));
+            _databaseSyncJobsRepository = databaseSyncJobsRepository ?? throw new ArgumentNullException(nameof(databaseSyncJobsRepository));
             _graphGroupRepository = graphGroupRepository ?? throw new ArgumentNullException(nameof(graphGroupRepository));
         }
 
         protected override async Task<GetJobsResponse> ExecuteCoreAsync(GetJobsRequest request)
         {
-            var response = new GetJobsResponse();
-            var jobs = _syncJobRepository.GetSyncJobsAsync(true, Models.SyncStatus.All);
+            var numberOfJobs = 0;
+            var response = new GetJobsResponse
+            {
+                CurrentPage = 1,
+                TotalNumberOfPages = 1
+            };
 
-            await foreach (var job in jobs)
+            var jobsQuery = _databaseSyncJobsRepository.GetSyncJobs(true);
+
+            if (request.QueryOptions != null)
+            {
+                jobsQuery = (IQueryable<SyncJob>)request.QueryOptions.ApplyTo(jobsQuery);
+
+                var countQuery = (IQueryable<SyncJob>)request.QueryOptions.ApplyTo(
+                       _databaseSyncJobsRepository.GetSyncJobs(true),
+                       AllowedQueryOptions.Skip | AllowedQueryOptions.Top);
+                numberOfJobs = countQuery.Count();
+
+                if (request.QueryOptions.Top?.Value > 0 && request.QueryOptions.Skip?.Value >= 0)
+                {
+                    response.TotalNumberOfPages = (int)Math.Ceiling((double)numberOfJobs / request.QueryOptions.Top.Value);
+                    response.CurrentPage = request.QueryOptions.Skip.Value / request.QueryOptions.Top.Value + 1;
+                }
+            }
+
+            var jobs = jobsQuery.ToList();
+            var targetGroups = (await _graphGroupRepository.GetGroupsAsync(jobs.Select(x => x.TargetOfficeGroupId).ToList()))
+                               .ToDictionary(x => x.ObjectId);
+
+            foreach (var job in jobs)
             {
                 var dto = new SyncJobDTO
                 (
-                    partitionKey: job.PartitionKey,
-                    rowKey: job.RowKey,
-                    targetGroupId: job.TargetOfficeGroupId,
-                    status: job.Status,
-                    startDate: job.StartDate,
-                    lastSuccessfulStartTime: job.LastSuccessfulStartTime,
-                    lastSuccessfulRunTime: job.LastSuccessfulRunTime,
-                    estimatedNextRunTime: job.StartDate > job.LastSuccessfulRunTime ? job.StartDate : job.LastSuccessfulRunTime.AddHours(job.Period),
-                    thresholdPercentageForAdditions: job.ThresholdPercentageForAdditions,
-                    thresholdPercentageForRemovals: job.ThresholdPercentageForRemovals
-                );
+                    job.Id,
+                    job.TargetOfficeGroupId,
+                    job.Status,
+                    job.Period,
+                    job.LastSuccessfulRunTime,
+                    job.StartDate > job.LastSuccessfulRunTime ? job.StartDate : job.LastSuccessfulRunTime.AddHours(job.Period)
+                )
+                {
+                    TargetGroupName = targetGroups.ContainsKey(job.TargetOfficeGroupId) ? targetGroups[job.TargetOfficeGroupId].Name : null,
+                    TargetGroupType = targetGroups.ContainsKey(job.TargetOfficeGroupId) ? targetGroups[job.TargetOfficeGroupId].Type : null
+                };
 
                 response.Model.Add(dto);
-            }
-
-            var targetGroups = (await _graphGroupRepository.GetGroupsAsync(response.Model.Select(x => x.TargetGroupId).ToList()))
-                               .ToDictionary(x => x.ObjectId);
-
-            foreach (var job in response.Model)
-            {
-                if (targetGroups.ContainsKey(job.TargetGroupId))
-                    job.TargetGroupType = targetGroups[job.TargetGroupId].Type;
             }
 
             return response;

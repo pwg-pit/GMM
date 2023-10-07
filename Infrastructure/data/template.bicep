@@ -23,6 +23,18 @@ param subscriptionId string = subscription().subscriptionId
 @description('Tenant id.')
 param tenantId string
 
+@description('SQL SKU Name')
+param sqlSkuName string
+
+@description('SQL SKU Tier')
+param sqlSkuTier string
+
+@description('SQL SKU Family')
+param sqlSkuFamily string
+
+@description('SQL SKU Capacity')
+param sqlSkuCapacity int
+
 @description('Key vault name.')
 @minLength(1)
 param keyVaultName string = '${solutionAbbreviation}-${resourceGroupClassification}-${environmentAbbreviation}'
@@ -69,16 +81,22 @@ param serviceBusTopicName string = 'syncJobs'
 @description('Enter service bus topic\'s subscriptions.')
 param serviceBusTopicSubscriptions array = [
   {
-    name: 'SecurityGroup'
+    name: 'GroupMembership'
     ruleName: 'syncType'
-    ruleSqlExpression: 'Type = \'SecurityGroup\''
+    ruleSqlExpression: 'Type = \'GroupMembership\''
   }
   {
-    name: 'AzureMembershipProvider'
+    name: 'PlaceMembership'
     ruleName: 'syncType'
-    ruleSqlExpression: 'Type = \'AzureMembershipProvider\''
+    ruleSqlExpression: 'Type = \'PlaceMembership\''
   }
 ]
+
+@description('Enter service bus membership updaters topic\'s and subscriptions details.')
+param serviceBusMembershipUpdatersTopicSubscriptions object
+
+@description('Enter membership aggregator service bus queue name')
+param serviceBusMembershipAggregatorQueue string = 'membershipAggregator'
 
 @description('Enter storage account name.')
 @minLength(1)
@@ -101,10 +119,6 @@ param jobsStorageAccountName string = 'jobs${environmentAbbreviation}${uniqueStr
 @description('Enter membership container name.')
 @minLength(1)
 param membershipContainerName string = 'membership'
-
-@description('Enter jobs table name.')
-@minLength(1)
-param jobsTableName string
 
 @description('Enter notifications table name.')
 @minLength(1)
@@ -141,17 +155,33 @@ param appConfigurationKeyData array = [
     tag: {
       tag1: 'JobTrigger'
     }
-  }
+  }        
   {
-    key: 'SecurityGroup:IsDeltaCacheEnabled'
-    value: 'false'
-    contentType: 'boolean'
+    key: 'JobTrigger:JobCountThreshold'
+    value: '100'
+    contentType: 'integer'
     tag: {
-      tag1: 'SecurityGroup'
+      tag1: 'JobTrigger'
     }
   }
   {
-    key: 'SecurityGroup:IsSecurityGroupDryRunEnabled'
+    key: 'JobTrigger:JobPercentThreshold'
+    value: '25'
+    contentType: 'integer'
+    tag: {
+      tag1: 'JobTrigger'
+    }
+  }
+  {
+    key: 'GroupMembershipObtainer:IsDeltaCacheEnabled'
+    value: 'false'
+    contentType: 'boolean'
+    tag: {
+      tag1: 'GroupMembershipObtainer'
+    }
+  }
+  {
+    key: 'GroupMembershipObtainer:IsDryRunEnabled'
     value: 'false'
     contentType: 'boolean'
     tag: {
@@ -176,15 +206,7 @@ param appConfigurationKeyData array = [
   }
   {
     key: 'MembershipAggregator:NumberOfThresholdViolationsToNotify'
-    value: '3'
-    contentType: 'integer'
-    tag: {
-      tag1: 'MembershipAggregator'
-    }
-  }
-  {
-    key: 'MembershipAggregator:NumberOfThresholdViolationsFollowUps'
-    value: '3'
+    value: '2'
     contentType: 'integer'
     tag: {
       tag1: 'MembershipAggregator'
@@ -192,7 +214,7 @@ param appConfigurationKeyData array = [
   }
   {
     key: 'MembershipAggregator:NumberOfThresholdViolationsToDisableJob'
-    value: '10'
+    value: '7'
     contentType: 'integer'
     tag: {
       tag1: 'MembershipAggregator'
@@ -256,6 +278,9 @@ param appConfigurationKeyData array = [
   }
 ]
 
+@description('Array of feature flags objects. {id:"value", description:"description", enabled:true }')
+param appConfigurationfeatureFlags array = []
+
 @description('Unique name within the resource group for the Action group.')
 param actionGroupName string = 'PIILogAlerts'
 
@@ -278,6 +303,28 @@ param notifierProviderId string
 
 @description('JSON string with an array listing the existing data resources [{Name: string, ResourceType: string}]')
 param existingDataResources string = '[]'
+
+@description('Administrators Azure AD Group Object Id')
+param sqlAdministratorsGroupId string
+
+@description('Administrators Azure AD Group Name')
+param sqlAdministratorsGroupName string
+
+module sqlServer 'sqlServer.bicep' =  {
+  name: 'sqlServerTemplate'
+  params: {
+    environmentAbbreviation: environmentAbbreviation
+    location: location
+    solutionAbbreviation: solutionAbbreviation
+    sqlSkuName: sqlSkuName
+    sqlSkuTier: sqlSkuTier
+    sqlSkuFamily: sqlSkuFamily
+    sqlSkuCapacity: sqlSkuCapacity
+    sqlAdministratorsGroupId: sqlAdministratorsGroupId
+    sqlAdministratorsGroupName: sqlAdministratorsGroupName
+    tenantId: tenantId
+  }
+}
 
 var isDataKVPresent = !empty(existingDataResources) ? !empty(filter(json(existingDataResources), x => x.Name == keyVaultName && x.ResourceType == 'Microsoft.KeyVault/vaults')) : false
 
@@ -337,6 +384,42 @@ module serviceBusSubscriptionsTemplate 'serviceBusSubscription.bicep' = {
   ]
 }
 
+module serviceBusMembershipUpdatersTopicTemplate 'serviceBusTopic.bicep' = {
+  name: 'serviceBusMembershipUpdatersTopicTemplate'
+  params: {
+    serviceBusName: serviceBusName
+    topicName: serviceBusMembershipUpdatersTopicSubscriptions.topicName
+  }
+  dependsOn: [
+    serviceBusTemplate
+  ]
+}
+
+module serviceBusMembershipUpdatersSubscriptionsTemplate 'serviceBusSubscription.bicep' = {
+  name: 'serviceBusMembershipUpdatersSubscriptionsTemplate'
+  params: {
+    serviceBusName: serviceBusName
+    topicName: serviceBusMembershipUpdatersTopicSubscriptions.topicName
+    topicSubscriptions: serviceBusMembershipUpdatersTopicSubscriptions.subscriptions
+  }
+  dependsOn: [
+    serviceBusMembershipUpdatersTopicTemplate
+  ]
+}
+
+module membershipAggregatorQueue 'serviceBusQueue.bicep' = {
+  name: 'membershipAggregatorQueue'
+  params: {
+    queueName: serviceBusMembershipAggregatorQueue
+    serviceBusName: serviceBusName
+    requiresSession: false
+    maxDeliveryCount: 5
+  }
+  dependsOn:[
+    serviceBusTemplate
+  ]
+}
+
 module storageAccountTemplate 'storageAccount.bicep' = {
   name: 'storageAccountTemplate'
   params: {
@@ -345,6 +428,9 @@ module storageAccountTemplate 'storageAccount.bicep' = {
     keyVaultName: keyVaultName
     location: location
   }
+  dependsOn:[
+    dataKeyVaultPoliciesTemplate
+  ]
 }
 
 module jobsStorageAccountTemplate 'storageAccount.bicep' = {
@@ -356,6 +442,9 @@ module jobsStorageAccountTemplate 'storageAccount.bicep' = {
     addJobsStorageAccountPolicies: true
     location: location
   }
+  dependsOn:[
+    dataKeyVaultPoliciesTemplate
+  ]
 }
 
 module logAnalyticsTemplate 'logAnalytics.bicep' = {
@@ -389,6 +478,7 @@ module appConfigurationTemplate 'appConfiguration.bicep' = {
     appConfigurationSku: appConfigurationSku
     location: location
     appConfigurationKeyData: appConfigurationKeyData
+    featureFlags: appConfigurationfeatureFlags
   }
 }
 
@@ -432,10 +522,6 @@ module secretsTemplate 'keyVaultSecrets.bicep' = {
         value: membershipContainerName
       }
       {
-        name: 'jobsTableName'
-        value: jobsTableName
-      }
-      {
         name: 'notificationsTableName'
         value: notificationsTableName
       }
@@ -452,12 +538,20 @@ module secretsTemplate 'keyVaultSecrets.bicep' = {
         value: serviceBusTopicName
       }
       {
+        name: 'serviceBusMembershipUpdatersTopic'
+        value: serviceBusMembershipUpdatersTopicSubscriptions.topicName
+      }
+      {
         name: 'logAnalyticsCustomerId'
         value: logAnalyticsTemplate.outputs.customerId
       }
       {
         name: 'notifierProviderId'
         value: notifierProviderId
+      }
+      {
+        name: 'serviceBusMembershipAggregatorQueue'
+        value: serviceBusMembershipAggregatorQueue
       }
     ]
   }
@@ -490,3 +584,4 @@ module dashboardTemplate 'dashboard.bicep' = {
 output storageAccountName string = storageAccountName
 output serviceBusName string = serviceBusName
 output serviceBusTopicName string = serviceBusTopicName
+output isDataKVPresent bool = isDataKVPresent

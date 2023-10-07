@@ -45,6 +45,22 @@ resource functionApp 'Microsoft.Web/sites@2018-02-01' = {
   }
 }
 
+resource snScmBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'scm'
+  properties: {
+    allow: false
+  }
+}
+
+resource snFtpBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'ftp'
+  properties: {
+    allow: false
+  }
+}
+
 module secretsTemplate 'keyVaultSecrets.bicep' = {
   name: 'secretsTemplate-Notifier'
   scope: resourceGroup(dataKeyVaultResourceGroup)
@@ -66,7 +82,7 @@ module secureSecretsTemplate 'keyVaultSecretsSecure.bicep' = {
     keyVaultName: dataKeyVaultName
     keyVaultSecrets: {
       secrets: [
-        { 
+        {
           name: 'notifierFunctionKey'
           value: listkeys('${functionApp.id}/host/default', '2018-11-01').functionKeys.default
         }
@@ -83,12 +99,12 @@ resource functionAppSlotConfig 'Microsoft.Web/sites/config@2021-03-01' = {
       'AzureFunctionsJobHost__extensions__durableTask__hubName'
       'AzureWebJobs.StarterFunction.Disabled'
       'AzureWebJobs.OrchestratorFunction.Disabled'
+      'AzureWebJobs.RetrieveNotificationsFunction.Disabled'
       'AzureWebJobs.LoggerFunction.Disabled'
-      'AzureWebJobs.PipelineInvocationStarterFunction.Disabled'
-      'AzureWebJobs.TimerStarterFunction.Disabled'
-      'AzureWebJobs.StatusCallbackOrchestratorFunction.Disabled'
-      'AzureWebJobs.CheckNotifierStatusFunction.Disabled'
-      'AzureWebJobs.PostCallbackFunction.Disabled'
+      'AzureWebJobs.UpdateNotificationStatusFunction.Disabled'
+      'AzureWebJobs.SendNotificationFunction.Disabled'
+      'AzureWebJobsStorage'
+      'AzureFunctionsWebHost__hostid'
     ]
   }
 }

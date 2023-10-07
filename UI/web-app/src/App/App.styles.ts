@@ -2,10 +2,11 @@
 // Licensed under the MIT license.
 
 import { getGlobalClassNames } from '@fluentui/react';
-import { IAppStyleProps, IAppStyles } from './App.types';
+
+import { type IAppStyleProps, type IAppStyles } from './App.types';
 
 const GlobalClassNames = {
-  root: 'gmm-app'
+  root: 'gmm-app',
 };
 
 export const getStyles = (props: IAppStyleProps): IAppStyles => {
@@ -15,6 +16,9 @@ export const getStyles = (props: IAppStyleProps): IAppStyles => {
 
   return {
     root: [{
+      fontFamily: 'Segoe UI',
+      backgroundColor: theme.palette.neutralLighter,
+      minHeight: '100vh'
     }, classNames.root, className],
     body: {
       display: 'flex',
@@ -22,17 +26,11 @@ export const getStyles = (props: IAppStyleProps): IAppStyles => {
       flexGrow: 1,
       justifyContent: 'center',
       boxSizing: 'border-box',
-      margin: '0 auto'
-    },
-    nav: {
-      width: 324
+      margin: '0 auto',
+      minHeight: '100vh'
     },
     content: {
-      backgroundColor: theme.palette.white,
-      paddingLeft: 40,
-      paddingRight: 40,
-      position: 'relative',
-      width: '100%'
-    }
+      width: '100%',
+    },
   };
 };

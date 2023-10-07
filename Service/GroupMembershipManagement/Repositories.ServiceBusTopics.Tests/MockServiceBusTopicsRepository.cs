@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-using Microsoft.Azure.ServiceBus;
 using Models;
+using Models.ServiceBus;
 using Newtonsoft.Json.Linq;
 using Repositories.Contracts;
 using System.Collections.Generic;
@@ -14,7 +14,7 @@ namespace Tests.Repositories
 {
     public class MockServiceBusTopicsRepository : IServiceBusTopicsRepository
     {
-        public Dictionary<string, List<Message>> Subscriptions { get; private set; } = new Dictionary<string, List<Message>>();
+        public Dictionary<string, List<ServiceBusMessage>> Subscriptions { get; private set; } = new Dictionary<string, List<ServiceBusMessage>>();
 
         public async Task AddMessageAsync(SyncJob job)
         {
@@ -33,17 +33,22 @@ namespace Tests.Repositories
                 }
                 else
                 {
-                    Subscriptions.Add(queryType, new List<Message> { message });
+                    Subscriptions.Add(queryType, new List<ServiceBusMessage> { message });
                 }
             }
 
             await Task.CompletedTask;
         }
 
-        public Message CreateMessage(SyncJob job)
+        public Task AddMessageAsync(ServiceBusMessage message)
+        {
+            throw new System.NotImplementedException();
+        }
+
+        public ServiceBusMessage CreateMessage(SyncJob job)
         {
             var body = JsonSerializer.Serialize(job);
-            var message = new Message
+            var message = new ServiceBusMessage
             {
                 Body = Encoding.UTF8.GetBytes(body)
             };

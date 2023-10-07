@@ -1,32 +1,35 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import React from "react";
-import { classNamesFunction, IProcessedStyleSet } from "@fluentui/react";
-import { useTheme } from "@fluentui/react/lib/Theme";
-import { useNavigate } from "react-router-dom";
-import { IIconProps } from "@fluentui/react";
-import { CommandBarButton } from "@fluentui/react/lib/Button";
-import { Stack, IStackStyles } from "@fluentui/react/lib/Stack";
-import { Separator } from "@fluentui/react";
 import {
-  IPageHeaderProps,
-  IPageHeaderStyleProps,
-  IPageHeaderStyles,
-} from "./PageHeader.types";
+  classNamesFunction,
+  type IProcessedStyleSet,
+  type IIconProps
+} from '@fluentui/react';
+import { ActionButton } from '@fluentui/react/lib/Button';
+import { Stack } from '@fluentui/react/lib/Stack';
+import { useTheme } from '@fluentui/react/lib/Theme';
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+
+import {
+  type IPageHeaderProps,
+  type IPageHeaderStyleProps,
+  type IPageHeaderStyles,
+} from './PageHeader.types';
 
 const getClassNames = classNamesFunction<
   IPageHeaderStyleProps,
   IPageHeaderStyles
 >();
 
-const stackStyles: Partial<IStackStyles> = { root: { height: 44 } };
-const addIcon: IIconProps = { iconName: "ChevronLeftMed" };
+const leftArrowIcon: IIconProps = { iconName: 'ChevronLeftMed' };
 
 export const PageHeaderBase: React.FunctionComponent<IPageHeaderProps> = (
   props: IPageHeaderProps
 ) => {
-  const { className, styles } = props;
+  const { backButtonHidden, children, className, styles } = props;
   const classNames: IProcessedStyleSet<IPageHeaderStyles> = getClassNames(
     styles,
     {
@@ -34,6 +37,7 @@ export const PageHeaderBase: React.FunctionComponent<IPageHeaderProps> = (
       theme: useTheme(),
     }
   );
+  const { t } = useTranslation();
 
   const navigate = useNavigate();
 
@@ -43,14 +47,19 @@ export const PageHeaderBase: React.FunctionComponent<IPageHeaderProps> = (
 
   return (
     <Stack className={classNames.root}>
-      <Stack horizontal styles={stackStyles}>
-        <CommandBarButton
-          iconProps={addIcon}
-          text="Back"
-          onClick={backButtonOnClick}
-        />
-      </Stack>
-      <Separator></Separator>
+      {
+        !backButtonHidden &&
+        <Stack horizontalAlign="start" verticalAlign='center'> 
+          <ActionButton
+            className={classNames.backButton}
+            iconProps={leftArrowIcon}
+            text={t('back') as string}
+            onClick={backButtonOnClick}
+          />
+          <div className={classNames.separator}></div>
+        </Stack>
+      }
+      {children}
     </Stack>
   );
 };

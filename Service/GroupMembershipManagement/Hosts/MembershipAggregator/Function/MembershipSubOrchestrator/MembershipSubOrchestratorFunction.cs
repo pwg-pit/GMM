@@ -12,17 +12,24 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Services.Contracts;
+using Services;
+using Microsoft.Graph.Models;
 
 namespace Hosts.MembershipAggregator
 {
     public class MembershipSubOrchestratorFunction
     {
+        private const string NoDataEmailSubject = "NoDataEmailSubject";
+        private const string NoDataEmailContent = "NoDataEmailContent";
         private const int MEMBERS_LIMIT = 100000;
         private readonly IThresholdConfig _thresholdConfig = null;
+        private readonly IGraphAPIService _graphAPIService;
 
-        public MembershipSubOrchestratorFunction(IThresholdConfig thresholdConfig)
+        public MembershipSubOrchestratorFunction(IThresholdConfig thresholdConfig, IGraphAPIService graphAPIService)
         {
             _thresholdConfig = thresholdConfig ?? throw new ArgumentNullException(nameof(thresholdConfig));
+            _graphAPIService = graphAPIService ?? throw new ArgumentNullException(nameof(graphAPIService));
         }
 
         [FunctionName(nameof(MembershipSubOrchestratorFunction))]
@@ -47,13 +54,49 @@ namespace Hosts.MembershipAggregator
                 RunId = request.SyncJob.RunId
             };
 
+            if (!request.SyncJob.AllowEmptyDestination && SourceMembership.SourceMembers.Count == 0)
+            {
+                await context.CallActivityAsync(nameof(JobStatusUpdaterFunction),
+                                                new JobStatusUpdaterRequest
+                                                {
+                                                    SyncJob = request.SyncJob,
+                                                    Status = SyncStatus.MembershipDataNotFound
+                                                });
+                await context.CallActivityAsync(nameof(LoggerFunction),
+                    new LoggerRequest
+                    {
+                        Message = new LogMessage
+                        {
+                            Message = $"Sources are empty for TargetOfficeGroupId {request.SyncJob.TargetOfficeGroupId}. Empty destination is not allowed for this group. Marking job as 'MembershipDataNotFound'.",
+                            RunId = runId
+                        }
+                    });
+
+                await context.CallActivityAsync(nameof(TelemetryTrackerFunction), new TelemetryTrackerRequest { 
+                    JobStatus = SyncStatus.MembershipDataNotFound, ResultStatus = ResultStatus.Success, RunId = runId });
+
+                await _graphAPIService.SendEmailAsync(
+                    toEmail: request.SyncJob.Requestor,
+                    contentTemplate: NoDataEmailContent,
+                    additionalContentParams: new[] { request.SyncJob.TargetOfficeGroupId.ToString() },
+                    runId,
+                    emailSubject: NoDataEmailSubject,
+                    additionalSubjectParams: new[] { request.SyncJob.TargetOfficeGroupId.ToString() });
+
+                return new MembershipSubOrchestratorResponse
+                {
+                    MembershipDeltaStatus = MembershipDeltaStatus.Error
+
+                };
+            }
+
             if (SourceMembership.SourceMembers.Count >= MEMBERS_LIMIT || DestinationMembership.SourceMembers.Count >= MEMBERS_LIMIT)
             {
-                var sourceFilePath = GenerateFileName(request.SyncJob, "SourceMembership");
+                var sourceFilePath = GenerateFileName(request.SyncJob, "SourceMembership", context);
                 var sourceContent = TextCompressor.Compress(JsonConvert.SerializeObject(SourceMembership));
                 var sourceRequest = new FileUploaderRequest { FilePath = sourceFilePath, Content = sourceContent, SyncJob = request.SyncJob };
 
-                var destinationFilePath = GenerateFileName(request.SyncJob, "DestinationMembership");
+                var destinationFilePath = GenerateFileName(request.SyncJob, "DestinationMembership", context);
                 var destinationContent = TextCompressor.Compress(JsonConvert.SerializeObject(DestinationMembership));
                 var destinationRequest = new FileUploaderRequest { FilePath = destinationFilePath, Content = destinationContent, SyncJob = request.SyncJob };
 
@@ -77,7 +120,7 @@ namespace Hosts.MembershipAggregator
 
             if (deltaResponse.MembershipDeltaStatus == MembershipDeltaStatus.Ok)
             {
-                var uploadRequest = CreateAggregatedFileUploaderRequest(SourceMembership, deltaResponse, request.SyncJob);
+                var uploadRequest = CreateAggregatedFileUploaderRequest(SourceMembership, deltaResponse, request.SyncJob, context);
                 await context.CallActivityAsync(nameof(FileUploaderFunction), uploadRequest);
                 await context.CallActivityAsync(nameof(LoggerFunction),
                     new LoggerRequest
@@ -98,6 +141,18 @@ namespace Hosts.MembershipAggregator
             }
             else if (deltaResponse.MembershipDeltaStatus == MembershipDeltaStatus.ThresholdExceeded)
             {
+                var uploadRequest = CreateAggregatedFileUploaderRequest(SourceMembership, deltaResponse, request.SyncJob, context);
+                await context.CallActivityAsync(nameof(FileUploaderFunction), uploadRequest);
+                await context.CallActivityAsync(nameof(LoggerFunction),
+                    new LoggerRequest
+                    {
+                        Message = new LogMessage
+                        {
+                            Message = $"Uploaded membership file {uploadRequest.FilePath} with {SourceMembership.SourceMembers.Count} unique members",
+                            RunId = runId
+                        }
+                    });
+
                 var currentThresholdViolations = request.SyncJob.ThresholdViolations + 1;
                 SyncStatus? status = currentThresholdViolations >= _thresholdConfig.NumberOfThresholdViolationsToDisableJob
                                     ? SyncStatus.ThresholdExceeded
@@ -178,7 +233,7 @@ namespace Hosts.MembershipAggregator
             return (sourceGroupMembership, destinationGroupMembership);
         }
 
-        private FileUploaderRequest CreateAggregatedFileUploaderRequest(GroupMembership membership, DeltaCalculatorResponse deltaResponse, SyncJob syncJob)
+        private FileUploaderRequest CreateAggregatedFileUploaderRequest(GroupMembership membership, DeltaCalculatorResponse deltaResponse, SyncJob syncJob, IDurableOrchestrationContext context)
         {
             var membersToAdd = JsonConvert.DeserializeObject<ICollection<AzureADUser>>(TextCompressor.Decompress(deltaResponse.CompressedMembersToAddJSON));
             var membersToRemove = JsonConvert.DeserializeObject<ICollection<AzureADUser>>(TextCompressor.Decompress(deltaResponse.CompressedMembersToRemoveJSON));
@@ -188,15 +243,21 @@ namespace Hosts.MembershipAggregator
             newMembership.SourceMembers.AddRange(membersToAdd);
             newMembership.SourceMembers.AddRange(membersToRemove);
 
-            var filePath = GenerateFileName(syncJob, "Aggregated");
-            var content = TextCompressor.Compress(JsonConvert.SerializeObject(newMembership));
+            var serializerSettings = new JsonSerializerSettings
+            {
+                NullValueHandling = NullValueHandling.Ignore, // Ignores null values during serialization
+                DefaultValueHandling = DefaultValueHandling.Ignore
+            };
+
+            var filePath = GenerateFileName(syncJob, "Aggregated", context);
+            var content = TextCompressor.Compress(JsonConvert.SerializeObject(newMembership, serializerSettings));
 
             return new FileUploaderRequest { FilePath = filePath, Content = content, SyncJob = syncJob };
         }
 
-        private string GenerateFileName(SyncJob syncJob, string suffix)
+        private string GenerateFileName(SyncJob syncJob, string suffix, IDurableOrchestrationContext context)
         {
-            var timeStamp = syncJob.Timestamp.GetValueOrDefault().ToString("MMddyyyy-HHmmss");
+            var timeStamp = context.CurrentUtcDateTime.ToString("MMddyyyy-HHmm");
             return $"/{syncJob.TargetOfficeGroupId}/{timeStamp}_{syncJob.RunId}_{suffix}.json";
         }
     }

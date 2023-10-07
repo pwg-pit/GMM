@@ -14,7 +14,8 @@ using Microsoft.Extensions.Options;
 using Repositories.GraphGroups;
 using Microsoft.Graph;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Azure.ServiceBus;
+using Azure.Messaging.ServiceBus;
+using System.IO;
 
 [assembly: FunctionsStartup(typeof(Hosts.JobTrigger.Startup))]
 
@@ -25,6 +26,8 @@ namespace Hosts.JobTrigger
         protected override string FunctionName => nameof(JobTrigger);
         protected override string DryRunSettingName => string.Empty;
 
+        private const string SCHEMA_DIRECTORY = "JsonSchemas";
+
         public override void Configure(IFunctionsHostBuilder builder)
         {
             base.Configure(builder);
@@ -32,12 +35,11 @@ namespace Hosts.JobTrigger
             builder.Services.AddOptions<JobTriggerConfig>().Configure<IConfiguration>((settings, configuration) =>
             {
                 settings.GMMHasGroupReadWriteAllPermissions = GetBoolSetting(configuration, "JobTrigger:IsGroupReadWriteAllGranted", false);
+                settings.JobCountThreshold = GetIntSetting(configuration, "JobTrigger:JobCountThreshold", 100); 
+                settings.JobPercentThreshold = GetIntSetting(configuration, "JobTrigger:JobPercentThreshold", 25);
             });
 
-            builder.Services.AddSingleton<IJobTriggerConfig>(services =>
-            {
-                return new JobTriggerConfig(services.GetService<IOptions<JobTriggerConfig>>().Value.GMMHasGroupReadWriteAllPermissions);
-            });
+            builder.Services.AddSingleton<IJobTriggerConfig>(services => services.GetService<IOptions<JobTriggerConfig>>().Value);
 
             builder.Services.AddSingleton<IKeyVaultSecret<IJobTriggerService>>(services => new KeyVaultSecret<IJobTriggerService>(services.GetService<IOptions<GraphCredentials>>().Value.ClientId))
             .AddSingleton((services) =>
@@ -46,13 +48,39 @@ namespace Hosts.JobTrigger
             })
             .AddScoped<IGraphGroupRepository, GraphGroupRepository>();
 
-            builder.Services.AddSingleton<IServiceBusTopicsRepository>(new ServiceBusTopicsRepository(new TopicClient(GetValueOrThrow("serviceBusConnectionString"), GetValueOrThrow("serviceBusSyncJobTopic"))));
+            builder.Services.AddSingleton<IServiceBusTopicsRepository>(services =>
+            {
+                var serviceBusSyncJobTopic = GetValueOrThrow("serviceBusSyncJobTopic");
+                var client = services.GetRequiredService<ServiceBusClient>();
+                var sender = client.CreateSender(serviceBusSyncJobTopic);
+                return new ServiceBusTopicsRepository(sender);
+            });
+
             builder.Services.AddScoped<IJobTriggerService, JobTriggerService>();
+
+            var rootPath = builder.GetContext().ApplicationRootPath;
+            var jsonSchemasPath = Path.Combine(rootPath, SCHEMA_DIRECTORY);
+            var schemaProvider = new JsonSchemaProvider();
+            if (Directory.Exists(jsonSchemasPath))
+            {
+                var files = Directory.EnumerateFiles(jsonSchemasPath);
+                foreach (var file in files)
+                {
+                    schemaProvider.Schemas.Add(Path.GetFileNameWithoutExtension(file), File.ReadAllText(file));
+                }
+            }
+
+            builder.Services.AddSingleton(schemaProvider);
         }
 
         private bool GetBoolSetting(IConfiguration configuration, string settingName, bool defaultValue)
         {
             var checkParse = bool.TryParse(configuration[settingName], out bool value);
+            return checkParse ? value : defaultValue;
+        }
+        private int GetIntSetting(IConfiguration configuration, string settingName, int defaultValue)
+        {
+            var checkParse = int.TryParse(configuration[settingName], out int value);
             return checkParse ? value : defaultValue;
         }
     }

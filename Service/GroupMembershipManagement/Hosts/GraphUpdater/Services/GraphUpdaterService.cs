@@ -25,7 +25,7 @@ namespace Services
         private readonly IGraphGroupRepository _graphGroupRepository;
         private readonly IMailRepository _mailRepository;
         private readonly IEmailSenderRecipient _emailSenderAndRecipients;
-        private readonly ISyncJobRepository _syncJobRepository;
+        private readonly IDatabaseSyncJobsRepository _syncJobRepository;
 
         private Guid _runId;
         public Guid RunId
@@ -44,7 +44,7 @@ namespace Services
                 IGraphGroupRepository graphGroupRepository,
                 IMailRepository mailRepository,
                 IEmailSenderRecipient emailSenderAndRecipients,
-                ISyncJobRepository syncJobRepository)
+                IDatabaseSyncJobsRepository syncJobRepository)
         {
             _loggingRepository = loggingRepository ?? throw new ArgumentNullException(nameof(loggingRepository));
             _telemetryClient = telemetryClient ?? throw new ArgumentNullException(nameof(telemetryClient));
@@ -79,20 +79,9 @@ namespace Services
             };
         }
 
-        public async Task<PolicyResult<bool>> GroupExistsAsync(Guid groupId, Guid runId)
+        public async Task<bool> GroupExistsAsync(Guid groupId, Guid runId)
         {
-            var graphRetryPolicy = Policy.Handle<SocketException>()
-                                    .WaitAndRetryAsync(NumberOfGraphRetries, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
-                   onRetry: async (ex, count) =>
-                   {
-                       await _loggingRepository.LogMessageAsync(new LogMessage
-                       {
-                           Message = $"Got a transient SocketException. Retrying. This was try {count} out of {NumberOfGraphRetries}.\n" + ex.ToString(),
-                           RunId = runId
-                       });
-                   });
-
-            return await graphRetryPolicy.ExecuteAndCaptureAsync(() => _graphGroupRepository.GroupExists(groupId));
+            return await _graphGroupRepository.GroupExists(groupId);
         }
 
         public async Task SendEmailAsync(string toEmail, string contentTemplate, string[] additionalContentParams, Guid runId, string ccEmail = null, string emailSubject = null, string[] additionalSubjectParams = null, string adaptiveCardTemplateDirectory = "")
@@ -137,9 +126,9 @@ namespace Services
             await _loggingRepository.LogMessageAsync(new LogMessage { Message = message, RunId = runId });
         }
 
-        public async Task<SyncJob> GetSyncJobAsync(string partitionKey, string rowKey)
+        public async Task<SyncJob> GetSyncJobAsync(Guid syncJobId)
         {
-            return await _syncJobRepository.GetSyncJobAsync(partitionKey, rowKey);
+            return await _syncJobRepository.GetSyncJobAsync(syncJobId);
         }
 
         public async Task<string> GetGroupNameAsync(Guid groupId)
@@ -166,7 +155,11 @@ namespace Services
             }, VerbosityLevel.DEBUG);
             _telemetryClient.TrackMetric(nameof(Metric.GraphAddRatePerSecond), members.Count / stopwatch.Elapsed.TotalSeconds);
 
-            var status = graphResponse.ResponseCode == ResponseCode.Error ? GraphUpdaterStatus.Error : GraphUpdaterStatus.Ok;
+            var status = graphResponse.ResponseCode == ResponseCode.GuestError ?
+                GraphUpdaterStatus.GuestError :
+                (graphResponse.ResponseCode == ResponseCode.Error ?
+                    GraphUpdaterStatus.Error :
+                    GraphUpdaterStatus.Ok);
             return (status, graphResponse.SuccessCount, graphResponse.UsersNotFound, graphResponse.UsersAlreadyExist);
         }
 

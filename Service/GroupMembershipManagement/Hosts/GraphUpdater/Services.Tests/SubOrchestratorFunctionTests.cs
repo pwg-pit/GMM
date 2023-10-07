@@ -49,8 +49,7 @@ namespace Services.Tests
 
             var content = new GroupMembership
             {
-                SyncJobPartitionKey = "PK",
-                SyncJobRowKey = "RK",
+                SyncJobId = Guid.Empty,
                 MembershipObtainerDryRunEnabled = false,
                 RunId = Guid.Empty,
                 SourceMembers = Enumerable.Range(0, _userCount)
@@ -70,10 +69,9 @@ namespace Services.Tests
 
             var syncJob = new SyncJob
             {
-                RowKey = Guid.NewGuid().ToString(),
-                PartitionKey = "00-00-0000",
+                Id = Guid.NewGuid(),
                 TargetOfficeGroupId = Guid.NewGuid(),
-                Query = "[{ \"type\": \"SecurityGroup\", \"sources\": [\"da144736-962b-4879-a304-acd9f5221e78\"]}]",
+                Query = "[{ \"type\": \"GroupMembership\", \"sources\": [\"da144736-962b-4879-a304-acd9f5221e78\"]}]",
                 Status = "InProgress",
                 Period = 6
             };
@@ -110,10 +108,16 @@ namespace Services.Tests
                                        })
                                        .ReturnsAsync(() => _cacheUrl);
 
-            _durableOrchestrationContext.Setup(x => x.CallActivityAsync(It.Is<string>(x => x == nameof(FileUploaderFunction)), It.IsAny<FileUploaderRequest>()))
+            _durableOrchestrationContext.Setup(x => x.CallActivityAsync(It.Is<string>(x => x == nameof(CacheUpdaterFunction)), It.IsAny<CacheUpdaterRequest>()))
                             .Callback<string, object>(async (name, request) =>
                             {
-                                await CallFileUploaderFunctionAsync(request as FileUploaderRequest);
+                                await CallCacheUpdaterFunctionAsync(request as CacheUpdaterRequest);
+                            });
+
+            _durableOrchestrationContext.Setup(x => x.CallActivityAsync(It.Is<string>(x => x == nameof(LoggerFunction)), It.IsAny<LoggerRequest>()))
+                            .Callback<string, object>(async (name, request) =>
+                            {
+                                await CallLoggerFunctionAsync(request as LoggerRequest);
                             });
 
             var telemetryClient = new TelemetryClient(TelemetryConfiguration.CreateDefault());
@@ -143,10 +147,16 @@ namespace Services.Tests
             return await function.DownloadFileAsync(request);
         }
 
-        private async Task CallFileUploaderFunctionAsync(FileUploaderRequest request)
+        private async Task CallCacheUpdaterFunctionAsync(CacheUpdaterRequest request)
         {
-            var function = new FileUploaderFunction(_loggingRepository.Object, _blobStorageRepository.Object);
-            await function.SendUsersAsync(request);
+            var function = new CacheUpdaterFunction(_loggingRepository.Object, _blobStorageRepository.Object);
+            await function.UpdateCacheAsync(request);
+        }
+
+        private async Task CallLoggerFunctionAsync(LoggerRequest request)
+        {
+            var function = new LoggerFunction(_loggingRepository.Object);
+            await function.LogMessageAsync(request);
         }
     }
 }

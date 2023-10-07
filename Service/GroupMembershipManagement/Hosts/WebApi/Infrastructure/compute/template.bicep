@@ -26,29 +26,9 @@ param servicePlanName string = '${solutionAbbreviation}-${resourceGroupClassific
 param appServiceName string = '${solutionAbbreviation}-${resourceGroupClassification}-${environmentAbbreviation}-webapi'
 
 @description('Enter the hostname for the api')
-param hostname string = '${appServiceName}.azurewebsites.net'
+param apiHostname string = '${appServiceName}.azurewebsites.net'
 
 @description('Service plan sku')
-@allowed([
-  'D1'
-  'F1'
-  'B1'
-  'B2'
-  'B3'
-  'S1'
-  'S2'
-  'S3'
-  'P1'
-  'P2'
-  'P3'
-  'P1V2'
-  'P2V2'
-  'P3V2'
-  'I1'
-  'I2'
-  'I3'
-  'Y1'
-])
 param servicePlanSku string = 'F1'
 
 @description('Resource location.')
@@ -75,16 +55,17 @@ param dataResourceGroup string = '${solutionAbbreviation}-data-${environmentAbbr
 @description('Enter application insights name.')
 param appInsightsName string = '${solutionAbbreviation}-data-${environmentAbbreviation}'
 
+var appInsightsInstrumentationKey = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'appInsightsInstrumentationKey')
 var webapiClientId = resourceId(subscription().subscriptionId, prereqsResourceGroup, 'Microsoft.KeyVault/vaults/secrets', prereqsKeyVaultName, 'webapiClientId')
 var logAnalyticsCustomerId = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'logAnalyticsCustomerId')
 var logAnalyticsPrimarySharedKey = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'logAnalyticsPrimarySharedKey')
 var jobsStorageAccountConnectionString = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'jobsStorageAccountConnectionString')
-var jobsTableName = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'jobsTableName')
 var graphAppClientId = resourceId(subscription().subscriptionId, prereqsResourceGroup, 'Microsoft.KeyVault/vaults/secrets', prereqsKeyVaultName, 'graphAppClientId')
 var graphAppClientSecret = resourceId(subscription().subscriptionId, prereqsResourceGroup, 'Microsoft.KeyVault/vaults/secrets', prereqsKeyVaultName, 'graphAppClientSecret')
 var graphAppCertificateName = resourceId(subscription().subscriptionId, prereqsResourceGroup, 'Microsoft.KeyVault/vaults/secrets', prereqsKeyVaultName, 'graphAppCertificateName')
 var graphAppTenantId = resourceId(subscription().subscriptionId, prereqsResourceGroup, 'Microsoft.KeyVault/vaults/secrets', prereqsKeyVaultName, 'graphAppTenantId')
 var actionableEmailProviderId = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'notifierProviderId')
+var replicaJobsMSIConnectionString = resourceId(subscription().subscriptionId, dataResourceGroup, 'Microsoft.KeyVault/vaults/secrets', dataKeyVaultName, 'replicaJobsMSIConnectionString')
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
   scope: resourceGroup(dataResourceGroup)
@@ -92,6 +73,10 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
 }
 
 var appSettings = [
+  {
+    name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+    value:'@Microsoft.KeyVault(SecretUri=${reference(appInsightsInstrumentationKey, '2019-09-01').secretUriWithVersion})'
+  }
   {
     name: 'AzureAd:ClientId'
     value: '@Microsoft.KeyVault(SecretUri=${reference(webapiClientId, '2019-09-01').secretUriWithVersion})'
@@ -102,7 +87,7 @@ var appSettings = [
   }
   {
     name: 'AzureAd:TenantId'
-    value: '@Microsoft.KeyVault(SecretUri=${reference(graphAppTenantId, '2019-09-01').secretUriWithVersion})'
+    value: tenantId
   }
   {
     name: 'AzureAd:Instance'
@@ -111,6 +96,10 @@ var appSettings = [
   {
     name: 'ApplicationInsights:ConnectionString'
     value: appInsights.properties.ConnectionString
+  }
+  {
+    name: 'ConnectionStrings:JobsContext'
+    value: '@Microsoft.KeyVault(SecretUri=${reference(replicaJobsMSIConnectionString, '2019-09-01').secretUriWithVersion})'
   }
   {
     name: 'Settings:appConfigurationEndpoint'
@@ -127,10 +116,6 @@ var appSettings = [
   {
     name: 'Settings:jobsStorageAccountConnectionString'
     value: '@Microsoft.KeyVault(SecretUri=${reference(jobsStorageAccountConnectionString, '2019-09-01').secretUriWithVersion})'
-  }
-  {
-    name: 'Settings:jobsTableName'
-    value: '@Microsoft.KeyVault(SecretUri=${reference(jobsTableName, '2019-09-01').secretUriWithVersion})'
   }
   {
     name: 'Settings:GraphCredentials:ClientCertificateName'
@@ -153,8 +138,8 @@ var appSettings = [
     value: '@Microsoft.KeyVault(SecretUri=${reference(actionableEmailProviderId, '2019-09-01').secretUriWithVersion})'
   }
   {
-    name: 'Settings:Hostname'
-    value: hostname
+    name: 'Settings:ApiHostname'
+    value: apiHostname
   }
   {
     name: 'Settings:GraphCredentials:KeyVaultName'
@@ -169,6 +154,7 @@ var appSettings = [
 module servicePlanTemplate 'servicePlan.bicep' = {
   name: 'servicePlanTemplate-WebApi'
   params: {
+    environmentAbbreviation: environmentAbbreviation
     name: servicePlanName
     sku: servicePlanSku
     location: location
@@ -178,13 +164,13 @@ module servicePlanTemplate 'servicePlan.bicep' = {
 
 module appService 'appService.bicep' = {
   name: 'appServiceTemplate-WebApi'
-  params:{
+  params: {
     name: appServiceName
     location: location
     servicePlanName: servicePlanName
     appSettings: appSettings
   }
-  dependsOn:[
+  dependsOn: [
     appInsights
     servicePlanTemplate
   ]

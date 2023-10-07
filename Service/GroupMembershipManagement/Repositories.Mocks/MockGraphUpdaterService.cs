@@ -19,7 +19,7 @@ namespace Repositories.Mocks
 
         public Dictionary<Guid, Group> Groups { get; set; } = new Dictionary<Guid, Group>();
         public Dictionary<Guid, List<AzureADUser>> GroupsToUsers { get; set; } = new Dictionary<Guid, List<AzureADUser>>();
-        public Dictionary<(string, string), SyncJob> Jobs { get; set; } = new Dictionary<(string, string), SyncJob>();
+        public List<SyncJob> Jobs { get; set; } = new List<SyncJob>();
         public Guid RunId { get; set; }
 
         public MockGraphUpdaterService(IMailRepository mailRepository)
@@ -42,17 +42,16 @@ namespace Repositories.Mocks
             throw new NotImplementedException();
         }
 
-        public async Task<SyncJob> GetSyncJobAsync(string partitionKey, string rowKey)
+        public async Task<SyncJob> GetSyncJobAsync(Guid syncJobId)
         {
-            var result = Jobs.ContainsKey((partitionKey, rowKey)) ? Jobs[(partitionKey, rowKey)] : null;
-            return await Task.FromResult(result);
+            var job = Jobs.FirstOrDefault(x => x.Id == syncJobId);
+            return await Task.FromResult(job);
         }
 
-        public async Task<PolicyResult<bool>> GroupExistsAsync(Guid groupId, Guid runId)
+        public async Task<bool> GroupExistsAsync(Guid groupId, Guid runId)
         {
             var groupExists = Groups.ContainsKey(groupId);
-            var result = PolicyResult<bool>.Successful(groupExists, new Context());
-            return await Task.FromResult(result);
+            return await Task.FromResult(groupExists);
         }
 
         public async Task SendEmailAsync(string toEmail, string contentTemplate, string[] additionalContentParams, Guid runId, string ccEmail = null, string emailSubject = null, string[] additionalSubjectParams = null, string adaptiveCardTemplateDirectory = "")
@@ -80,7 +79,7 @@ namespace Repositories.Mocks
             else
                 job.LastRunTime = DateTime.UtcNow;
 
-            Jobs[(job.PartitionKey, job.RowKey)] = job;
+            Jobs[0] = job;
 
             return Task.CompletedTask;
         }
@@ -112,6 +111,6 @@ namespace Repositories.Mocks
         public Task SendEmailAsync(string toEmail, string contentTemplate, string[] additionalContentParams, Guid runId, string ccEmail = null, string emailSubject = null, string[] additionalSubjectParams = null)
         {
             throw new NotImplementedException();
-        }
+        }        
     }
 }

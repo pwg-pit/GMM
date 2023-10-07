@@ -3,14 +3,16 @@
 
 using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OData.Query;
 using Microsoft.Graph;
 using Microsoft.Kiota.Abstractions;
-using Microsoft.Kiota.Abstractions.Serialization;
+using Microsoft.OData.ModelBuilder;
+using Microsoft.OData.UriParser;
 using Models;
 using Moq;
 using Repositories.Contracts;
-using Repositories.GraphGroups;
 using WebApi.Controllers.v1.Jobs;
 using WebApi.Models.Responses;
 
@@ -21,6 +23,7 @@ namespace Services.Tests
     {
         private int _jobCount = 1000;
 
+        private HttpContext _context = null!;
         private List<string> _groupTypes = null!;
         private List<SyncJob> _jobEntities = null!;
         private List<AzureADGroup> _groups = null!;
@@ -29,17 +32,27 @@ namespace Services.Tests
         private TelemetryClient _telemetryClient = null!;
         private Mock<IRequestAdapter> _requestAdapter = null!;
         private Mock<ILoggingRepository> _loggingRepository = null!;
-        private Mock<ISyncJobRepository> _syncJobRepository = null!;
+        private Mock<IDatabaseSyncJobsRepository> _databaseSyncJobsRepository = null!;
         private Mock<GraphServiceClient> _graphServiceClient = null!;
         private Mock<IGraphGroupRepository> _graphGroupRepository = null!;
+        private ODataQueryOptions<SyncJob> _odataQueryOptions = null!;
 
         [TestInitialize]
         public void Initialize()
         {
             _groups = new List<AzureADGroup>();
+            _context = new DefaultHttpContext();
             _requestAdapter = new Mock<IRequestAdapter>();
             _loggingRepository = new Mock<ILoggingRepository>();
-            _syncJobRepository = new Mock<ISyncJobRepository>();
+            _databaseSyncJobsRepository = new Mock<IDatabaseSyncJobsRepository>();
+
+            var builder = new ODataConventionModelBuilder();
+            builder.EntitySet<SyncJob>("SyncJob");
+            var edmModel = builder.GetEdmModel();
+
+            var odataContext = new ODataQueryContext(edmModel, typeof(SyncJob), new ODataPath());
+            _odataQueryOptions = new ODataQueryOptions<SyncJob>(odataContext, _context.Request);
+
 
             _requestAdapter.SetupProperty(x => x.BaseUrl).SetReturnsDefault("https://graph.microsoft.com/v1.0");
 
@@ -64,8 +77,7 @@ namespace Services.Tests
 
             _jobEntities = Enumerable.Range(0, _jobCount).Select(x => new SyncJob
             {
-                PartitionKey = Guid.NewGuid().ToString(),
-                RowKey = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid(),
                 Status = ((SyncStatus)Random.Shared.Next(1, 15)).ToString(),
                 TargetOfficeGroupId = Guid.NewGuid(),
                 LastSuccessfulRunTime = DateTime.UtcNow.AddHours(-4),
@@ -85,20 +97,27 @@ namespace Services.Tests
                 });
             });
 
-            _syncJobRepository.Setup(x => x.GetSyncJobsAsync(true, SyncStatus.All))
-                              .Returns(() => ToAsyncEnumerable(_jobEntities));
+            _databaseSyncJobsRepository.Setup(x => x.GetSyncJobsAsync())
+                              .ReturnsAsync(() => _jobEntities);
+
+            _databaseSyncJobsRepository.Setup(x => x.GetSyncJobs(It.IsAny<bool>()))
+                  .Returns(() => _jobEntities.AsQueryable());
 
             _getJobsHandler = new GetJobsHandler(_loggingRepository.Object,
-                                                 _syncJobRepository.Object,
+                                                 _databaseSyncJobsRepository.Object,
                                                  _graphGroupRepository.Object);
 
             _jobsController = new JobsController(_getJobsHandler);
+            _jobsController.ControllerContext = new ControllerContext
+            {
+                HttpContext = _context
+            };
         }
 
         [TestMethod]
         public async Task GetJobsTestAsync()
         {
-            var response = await _jobsController.GetJobsAsync();
+            var response = await _jobsController.GetJobsAsync(_odataQueryOptions);
             var result = response.Result as OkObjectResult;
 
             Assert.IsNotNull(response);
@@ -110,7 +129,7 @@ namespace Services.Tests
             Assert.IsNotNull(jobs);
             Assert.AreEqual(_jobCount, jobs.Count);
             Assert.AreEqual(_jobCount, jobs.Select(x => x.TargetGroupId).Distinct().Count());
-            Assert.IsTrue(jobs.All(x => x.RowKey != null && x.PartitionKey != null));
+            Assert.IsTrue(jobs.All(x => x.SyncJobId.ToString() != null));
             Assert.IsTrue(jobs.All(x => x.EstimatedNextRunTime == x.LastSuccessfulRunTime.AddHours(6)));
             Assert.IsTrue(jobs.All(x => x.Status != null));
             Assert.IsTrue(jobs.All(x => x.TargetGroupType != null));
@@ -119,30 +138,24 @@ namespace Services.Tests
         [TestMethod]
         public async Task GetJobsTestWithGraphAPIFailureAsync()
         {
-            _requestAdapter.Setup(x => x.ConvertToNativeRequestAsync<HttpRequestMessage>(It.IsAny<RequestInformation>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(() => new HttpRequestMessage());
+            _graphGroupRepository.Setup(x => x.GetGroupNameAsync(It.IsAny<Guid>()))
+                                    .ReturnsAsync(() => "Example Name");
 
-            _requestAdapter.Setup(x => x.SendNoContentAsync(
-                                                It.IsAny<RequestInformation>(),
-                                                It.IsAny<Dictionary<string, ParsableFactory<IParsable>>>(),
-                                                It.IsAny<CancellationToken>()
-                                 )).ThrowsAsync(new ApiException("GraphAPI exception"));
-
-            _graphServiceClient = new Mock<GraphServiceClient>(_requestAdapter.Object,
-                                                               "https://graph.microsoft.com/v1.0");
-
-            var graphGroupRepository = new GraphGroupRepository(
-                                                _graphServiceClient.Object,
-                                                _telemetryClient,
-                                                _loggingRepository.Object);
+            _graphGroupRepository.Setup(x => x.GetGroupsAsync(It.IsAny<List<Guid>>()))
+                .ReturnsAsync(new List<AzureADGroup>());
 
             _getJobsHandler = new GetJobsHandler(
                                      _loggingRepository.Object,
-                                     _syncJobRepository.Object,
-                                     graphGroupRepository);
+                                     _databaseSyncJobsRepository.Object,
+                                     _graphGroupRepository.Object);
 
             _jobsController = new JobsController(_getJobsHandler);
-            var response = await _jobsController.GetJobsAsync();
+            _jobsController.ControllerContext = new ControllerContext
+            {
+                HttpContext = _context
+            };
+
+            var response = await _jobsController.GetJobsAsync(_odataQueryOptions);
             var result = response.Result as OkObjectResult;
 
             Assert.IsNotNull(response);
@@ -154,18 +167,11 @@ namespace Services.Tests
             Assert.IsNotNull(jobs);
             Assert.AreEqual(_jobCount, jobs.Count);
             Assert.AreEqual(_jobCount, jobs.Select(x => x.TargetGroupId).Distinct().Count());
-            Assert.IsTrue(jobs.All(x => x.RowKey != null && x.PartitionKey != null));
+            Assert.IsTrue(jobs.All(x => x.SyncJobId.ToString() != null));
             Assert.IsTrue(jobs.All(x => x.EstimatedNextRunTime == x.LastSuccessfulRunTime.AddHours(6)));
             Assert.IsTrue(jobs.All(x => x.Status != null));
             Assert.IsTrue(jobs.All(x => x.TargetGroupType == null));
 
-            _loggingRepository.Verify(x => x.LogMessageAsync
-            (
-                It.Is<LogMessage>(x => x.Message.StartsWith("Unable to retrieve group types")),
-                It.IsAny<VerbosityLevel>(),
-                It.IsAny<string>(),
-                It.IsAny<string>()
-            ), Times.Once);
         }
 
         private async IAsyncEnumerable<T> ToAsyncEnumerable<T>(IEnumerable<T> input)

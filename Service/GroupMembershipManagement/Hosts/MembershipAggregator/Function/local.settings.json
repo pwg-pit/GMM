@@ -2,12 +2,12 @@
   "IsEncrypted": false,
   "Values": {
     "APPINSIGHTS_INSTRUMENTATIONKEY": "",
-    "AzureWebJobsStorage": "",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "appConfigurationEndpoint": "https://<solution>-appconfig-<environment>.azconfig.io",
     "logAnalyticsCustomerId": "",
     "logAnalyticsPrimarySharedKey": "",
     "jobsStorageAccountConnectionString": "",
-    "jobsTableName": "syncJobs",
+    "ConnectionStrings:JobsContext": "",
     "notificationsTableName": "notifications",
     "graphUpdaterUrl": "",
     "graphUpdaterFunctionKey": "",
@@ -23,7 +23,9 @@
     "syncCompletedCCEmailAddresses": "",
     "syncDisabledCCEmailAddresses": "",
     "supportEmailAddresses": "",
-    "actionableEmailProviderId": ""
+    "actionableEmailProviderId": "",
+    "serviceBusMembershipAggregatorQueue": "",
+    "serviceBusConnectionString": ""
   },
   "ConnectionStrings": {}
 }

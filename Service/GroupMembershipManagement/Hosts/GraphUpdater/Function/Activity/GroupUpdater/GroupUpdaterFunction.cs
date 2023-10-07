@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using GraphUpdater.Helpers;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Models;
 using Repositories.Contracts;
 using Services.Contracts;
+using Services.Entities;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -31,15 +33,18 @@ namespace Hosts.GraphUpdater
 
             _graphUpdaterService.RunId = request.SyncJob.RunId.GetValueOrDefault(Guid.Empty);
 
+            GraphUpdaterStatus responseStatus;
             var successCount = 0;
             var usersNotFound = new List<AzureADUser>();
             var usersAlreadyExist = new List<AzureADUser>();
+            var destination = JsonParser.GetDestination(request.SyncJob.Destination);
 
             if (request.Type == RequestType.Add)
             {
                 var addUsersToGraphResponse = await _graphUpdaterService.AddUsersToGroupAsync(
-                    request.Members, request.SyncJob.TargetOfficeGroupId, request.SyncJob.RunId.GetValueOrDefault(), request.IsInitialSync);
+                    request.Members, destination.ObjectId, request.SyncJob.RunId.GetValueOrDefault(), request.IsInitialSync);
 
+                responseStatus = addUsersToGraphResponse.Status;
                 successCount = addUsersToGraphResponse.SuccessCount;
                 usersNotFound = addUsersToGraphResponse.UsersNotFound;
                 usersAlreadyExist = addUsersToGraphResponse.UsersAlreadyExist;
@@ -47,8 +52,9 @@ namespace Hosts.GraphUpdater
             else
             {
                 var removeUsersFromGraphResponse = await _graphUpdaterService.RemoveUsersFromGroupAsync(
-                    request.Members, request.SyncJob.TargetOfficeGroupId, request.SyncJob.RunId.GetValueOrDefault(), request.IsInitialSync);
+                    request.Members, destination.ObjectId, request.SyncJob.RunId.GetValueOrDefault(), request.IsInitialSync);
 
+                responseStatus = removeUsersFromGraphResponse.Status;
                 successCount = removeUsersFromGraphResponse.SuccessCount;
                 usersNotFound = removeUsersFromGraphResponse.UsersNotFound;
             }
@@ -57,6 +63,7 @@ namespace Hosts.GraphUpdater
 
             return new GroupUpdaterResponse()
                 {
+                    Status = responseStatus,
                     SuccessCount = successCount,
                     UsersNotFound = usersNotFound,
                     UsersAlreadyExist = usersAlreadyExist

@@ -14,32 +14,31 @@ param tenantId string
 @description('Enter storage account name.')
 param storageAccountName string
 
-@description('Name of the \'data\' key vault.')
-param dataKeyVaultName string = '${solutionAbbreviation}-data-${environmentAbbreviation}'
+param storageAccountSku string = 'Standard_LRS'
+@description('Resource location.')
+param location string
 
-@description('Name of the resource group where the \'data\' key vault is located.')
-param dataKeyVaultResourceGroup string = '${solutionAbbreviation}-data-${environmentAbbreviation}'
+var keyVaultName = '${solutionAbbreviation}-data-${environmentAbbreviation}'
+var prodStorageAccountName = substring('am${solutionAbbreviation}${environmentAbbreviation}prod${uniqueString(resourceGroup().id)}',0,23)
+var stagingStorageAccountName = substring('am${solutionAbbreviation}${environmentAbbreviation}staging${uniqueString(resourceGroup().id)}',0,23)
 
-@description('Whether to back up to table or blob storage.')
-@allowed([
-  'table'
-  'blob'
-])
-param backupType string = 'table'
-
-
-resource dataKeyVault 'Microsoft.KeyVault/vaults@2019-09-01' existing = {
-  name: '${solutionAbbreviation}-data-${environmentAbbreviation}'
-  scope: resourceGroup(subscription().subscriptionId, '${solutionAbbreviation}-data-${environmentAbbreviation}' )
-}
-
-module settingBuilder 'settingsBuilder.bicep' = {
-  name: 'backupSettingsBuilder'
+module azureMaintenanceStorageAccountProd 'storageAccount.bicep' = {
+  name: 'amProdstorageAccountTemplate'
   params: {
-    backupType: backupType
-    jobsDestinationTableConnectionStringSecret: dataKeyVault.getSecret('jobsStorageAccountConnectionString')
-    jobsSourceTableConnectionStringSecret:dataKeyVault.getSecret('jobsStorageAccountConnectionString')
-    jobsTableNameSecret: dataKeyVault.getSecret('jobsTableName')
-    dataKeyVaultName: dataKeyVaultName
+    name: prodStorageAccountName
+    sku: storageAccountSku
+    keyVaultName: keyVaultName
+    location: location
+    storageAccountConnectionStringSettingName: 'azureMaintenanceStorageAccountProd'
+  }
+}
+module azureMaintenanceStorageAccountStaging 'storageAccount.bicep' = {
+  name: 'amStagingstorageAccountTemplate'
+  params: {
+    name: stagingStorageAccountName
+    sku: storageAccountSku
+    keyVaultName: keyVaultName
+    location: location
+    storageAccountConnectionStringSettingName: 'azureMaintenanceStorageAccountStaging'
   }
 }

@@ -1,17 +1,17 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <root>
-  <!-- 
-    Microsoft ResX Schema 
-    
+  <!--
+    Microsoft ResX Schema
+
     Version 2.0
-    
-    The primary goals of this format is to allow a simple XML format 
-    that is mostly human readable. The generation and parsing of the 
-    various data types are done through the TypeConverter classes 
+
+    The primary goals of this format is to allow a simple XML format
+    that is mostly human readable. The generation and parsing of the
+    various data types are done through the TypeConverter classes
     associated with the data types.
-    
+
     Example:
-    
+
     ... ado.net/XML headers & schema ...
     <resheader name="resmimetype">text/microsoft-resx</resheader>
     <resheader name="version">2.0</resheader>
@@ -26,36 +26,36 @@
         <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
         <comment>This is a comment</comment>
     </data>
-                
-    There are any number of "resheader" rows that contain simple 
+
+    There are any number of "resheader" rows that contain simple
     name/value pairs.
-    
-    Each data row contains a name, and value. The row also contains a 
-    type or mimetype. Type corresponds to a .NET class that support 
-    text/value conversion through the TypeConverter architecture. 
-    Classes that don't support this are serialized and stored with the 
+
+    Each data row contains a name, and value. The row also contains a
+    type or mimetype. Type corresponds to a .NET class that support
+    text/value conversion through the TypeConverter architecture.
+    Classes that don't support this are serialized and stored with the
     mimetype set.
-    
-    The mimetype is used for serialized objects, and tells the 
-    ResXResourceReader how to depersist the object. This is currently not 
+
+    The mimetype is used for serialized objects, and tells the
+    ResXResourceReader how to depersist the object. This is currently not
     extensible. For a given mimetype the value must be set accordingly:
-    
-    Note - application/x-microsoft.net.object.binary.base64 is the format 
-    that the ResXResourceWriter will generate, however the reader can 
+
+    Note - application/x-microsoft.net.object.binary.base64 is the format
+    that the ResXResourceWriter will generate, however the reader can
     read any of the formats listed below.
-    
+
     mimetype: application/x-microsoft.net.object.binary.base64
-    value   : The object must be serialized with 
+    value   : The object must be serialized with
             : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
             : and then encoded with base64 encoding.
-    
+
     mimetype: application/x-microsoft.net.object.soap.base64
-    value   : The object must be serialized with 
+    value   : The object must be serialized with
             : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
             : and then encoded with base64 encoding.
 
     mimetype: application/x-microsoft.net.object.bytearray.base64
-    value   : The object must be serialized into a byte array 
+    value   : The object must be serialized into a byte array
             : using a System.ComponentModel.TypeConverter
             : and then encoded with base64 encoding.
     -->
@@ -121,8 +121,9 @@
     <value>{
     "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
     "type": "AdaptiveCard",
-    "version": "1.4",
+    "version": "1.0",
     "originator": "${$root.providerId}",
+    "createdUtc": "${$root.cardCreatedTime}",
     "body": [
       {
         "type": "Container",
@@ -154,7 +155,7 @@
                 "items": [
                   {
                     "type": "TextBlock",
-                    "text": "Group Threshold Exceeded",
+                    "text": "Membership Change Alert",
                     "wrap": true,
                     "weight": "Bolder"
                   },
@@ -192,13 +193,13 @@
         "items": [
           {
             "type": "TextBlock",
-            "text": "A recent synchronization attempt of **${$root.groupName}** resulted in changes that were larger than expected and require approval before synchronization can proceed.",
+            "text": "The most recent attempt to update the membership of your GMM managed group '**${$root.groupName}**' exceeded the configured alert threshold.",
             "wrap": true,
             "color": "Attention"
           },
           {
             "type": "TextBlock",
-            "text": "GMM has identified **${$root.changeQuantityForAdditions}** members to be added, increasing the group size by **${$root.changePercentageForAdditions}%**, which is more than the current additions threshold of **${$root.thresholdPercentageForAdditions}%**.",
+            "text": "${$root.changeQuantityForAdditions} members will be **added**, which will increase the group size by **${$root.changePercentageForAdditions}%**.",
             "wrap": true,
             "spacing": "Small",
             "color": "Accent",
@@ -206,7 +207,7 @@
           },
           {
             "type": "TextBlock",
-            "text": "GMM has identified **${$root.changeQuantityForRemovals}** members to be removed, decreasing the group size by **${$root.changePercentageForRemovals}%**, which is more than the current removals threshold of **${$root.thresholdPercentageForRemovals}%**.",
+            "text": "${$root.changeQuantityForRemovals} members will be **removed**, which will decrease the group size by **${$root.changePercentageForRemovals}%**.",
             "wrap": true,
             "spacing": "Small",
             "color": "Accent",
@@ -214,7 +215,7 @@
           },
           {
             "type": "TextBlock",
-            "text": "Do you want to proceed with the changes to **${$root.groupName}**?",
+            "text": "Do you want to proceed?",
             "wrap": true,
             "color": "Accent",
             "size": "Default",
@@ -227,7 +228,7 @@
                 "type": "Action.Http",
                 "title": "No, Pause Sync Job",
                 "method": "POST",
-                "url": "https://${$root.apiHostname}/api/v1/${$root.notificationId}/resolve",
+                "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/resolve",
                 "body": "{\"resolution\":\"Paused\"}",
                 "isPrimary": true,
                 "style": "positive"
@@ -236,7 +237,7 @@
                 "type": "Action.Http",
                 "title": "Yes, Apply Changes",
                 "method": "POST",
-                "url": "https://${$root.apiHostname}/api/v1/${$root.notificationId}/resolve",
+                "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/resolve",
                 "body": "{\"resolution\":\"IgnoreOnce\"}"
               }
             ],
@@ -249,7 +250,7 @@
             "items": [
               {
                 "type": "TextBlock",
-                "text": "If you would like to make changes to the synchronization thresholds to reduce the frequency of these notifications, please reach out to the GMM Team.",
+                "text": "**${$root.thresholdPercentageForAdditions}% increase** and **${$root.thresholdPercentageForRemovals}% decrease** alerts are configured for this group. If you would like to change these alert percentages or disable them, please pause the sync and contact GMM support for further inquiry.",
                 "wrap": true
               },
               {
@@ -257,12 +258,13 @@
                 "actions": [
                   {
                     "type": "Action.OpenUrl",
-                    "title": "Contact GMM",
+                    "title": "Learn more about GMM",
                     "url": "https://microsoft.sharepoint.com/sites/Office365/SitePages/Group-Membership-Management.aspx",
                     "isPrimary": false
                   }
                 ],
-                "horizontalAlignment": "Center"
+                "horizontalAlignment": "Left",
+                "separator": true
               }
             ],
             "spacing": "Medium"
@@ -273,7 +275,171 @@
     ],
     "autoInvokeAction": {
       "method": "POST",
-      "url": "https://${$root.apiHostname}/api/v1/${$root.notificationId}/card",
+      "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/card",
+      "body": "",
+      "type": "Action.Http"
+    }
+  }</value>
+  </data>
+  <data name="CardTemplate.ThresholdNotificationDisabled" xml:space="preserve">
+    <value>{
+    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+    "type": "AdaptiveCard",
+    "version": "1.0",
+    "originator": "${$root.providerId}",
+    "createdUtc": "${$root.cardCreatedTime}",
+    "body": [
+      {
+        "type": "Container",
+        "padding": "Small",
+        "style": "emphasis",
+        "items": [
+          {
+            "type": "ColumnSet",
+            "padding": "None",
+            "columns": [
+              {
+                "type": "Column",
+                "padding": "None",
+                "width": "auto",
+                "items": [
+                  {
+                    "type": "Image",
+                    "url": "data:image/png;base64,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",
+                    "altText": "Synchronization Exception Icon",
+                    "size": "Small"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "padding": "None",
+                "verticalContentAlignment": "Center",
+                "width": "auto",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Membership Change Alert",
+                    "wrap": true,
+                    "weight": "Bolder"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Group Membership Management",
+                    "wrap": true,
+                    "spacing": "None",
+                    "color": "Dark",
+                    "size": "Small"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Container",
+        "padding": "Default",
+        "separator": true,
+        "items": [
+          {
+            "type": "TextBlock",
+            "text": "${$root.groupName}",
+            "wrap": true,
+            "size": "Large",
+            "weight": "Bolder"
+          }
+        ]
+      },
+      {
+        "type": "Container",
+        "padding": "Default",
+        "items": [
+          {
+            "type": "TextBlock",
+            "text": "Synchronization of your GMM group **${$root.groupName}** has been disabled. If no action is taken, the sync will be deleted on **${$root.jobExpirationDate}** UTC. After this period, if you wish to reenable the sync, you will need to follow GMM's onboarding process again.",
+            "wrap": true,
+            "color": "Attention"
+          },
+          {
+            "type": "TextBlock",
+            "text": "${$root.changeQuantityForAdditions} members will be **added**, which will increase the group size by **${$root.changePercentageForAdditions}%**.",
+            "wrap": true,
+            "spacing": "Small",
+            "color": "Accent",
+            "$when": "${$root.changeQuantityForAdditions &gt; 0}"
+          },
+          {
+            "type": "TextBlock",
+            "text": "${$root.changeQuantityForRemovals} members will be **removed**, which will decrease the group size by **${$root.changePercentageForRemovals}%**.",
+            "wrap": true,
+            "spacing": "Small",
+            "color": "Accent",
+            "$when": "${$root.changeQuantityForRemovals &gt; 0}"
+          },
+          {
+            "type": "TextBlock",
+            "text": "Do you want to proceed?",
+            "wrap": true,
+            "color": "Accent",
+            "size": "Default",
+            "weight": "Bolder"
+          },
+          {
+            "type": "ActionSet",
+            "actions": [
+              {
+                "type": "Action.Http",
+                "title": "No, Pause Sync Job",
+                "method": "POST",
+                "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/resolve",
+                "body": "{\"resolution\":\"Paused\"}",
+                "isPrimary": true,
+                "style": "positive"
+              },
+              {
+                "type": "Action.Http",
+                "title": "Yes, Apply Changes",
+                "method": "POST",
+                "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/resolve",
+                "body": "{\"resolution\":\"IgnoreOnce\"}"
+              }
+            ],
+            "spacing": "Large"
+          },
+          {
+            "type": "Container",
+            "padding": "Medium",
+            "separator": true,
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "**${$root.thresholdPercentageForAdditions}% increase** and **${$root.thresholdPercentageForRemovals}% decrease** alerts are configured for this group. If you would like to change these alert percentages or disable them, please pause the sync and contact GMM support for further inquiry.",
+                "wrap": true
+              },
+              {
+                "type": "ActionSet",
+                "actions": [
+                  {
+                    "type": "Action.OpenUrl",
+                    "title": "Learn more about GMM",
+                    "url": "https://microsoft.sharepoint.com/sites/Office365/SitePages/Group-Membership-Management.aspx",
+                    "isPrimary": false
+                  }
+                ],
+                "horizontalAlignment": "Left",
+                "separator": true
+              }
+            ],
+            "spacing": "Medium"
+          }
+        ],
+        "separator": true
+      }
+    ],
+    "autoInvokeAction": {
+      "method": "POST",
+      "url": "https://${$root.apiHostname}/api/v1/notifications/${$root.notificationId}/card",
       "body": "",
       "type": "Action.Http"
     }
@@ -283,7 +449,8 @@
     <value>{
   "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
   "type": "AdaptiveCard",
-  "version": "1.5",
+  "version": "1.0",
+  "createdUtc": "${$root.cardCreatedTime}",
   "body": [
     {
       "type": "Container",
@@ -384,6 +551,7 @@
   "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
   "type": "AdaptiveCard",
   "version": "1.0",
+  "createdUtc": "${$root.cardCreatedTime}",
   "body": [
     {
       "type": "Container",
@@ -412,7 +580,7 @@
               "items": [
                 {
                   "type": "TextBlock",
-                  "text": "Threshold Violation Exception",
+                  "text": "Membership Change Alert",
                   "wrap": true,
                   "weight": "Bolder"
                 },
@@ -489,7 +657,7 @@
             },
             {
               "type": "TextBlock",
-              "text": "This notification was resolved by **${$root.resolvedByUPN}** on **${$root.resolvedTime}**.",
+              "text": "This notification was resolved by **${$root.resolvedByUPN}** on **${$root.resolvedTime}** UTC.",
               "wrap": true,
               "spacing": "Small",
               "color": "Good"
@@ -530,7 +698,8 @@
     <value>{
   "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
   "type": "AdaptiveCard",
-  "version": "1.5",
+  "version": "1.0",
+  "createdUtc": "${$root.cardCreatedTime}",
   "body": [
     {
       "type": "Container",
@@ -559,7 +728,7 @@
               "items": [
                 {
                   "type": "TextBlock",
-                  "text": "Threshold Violation Exception",
+                  "text": "Membership Change Alert",
                   "wrap": true,
                   "weight": "Bolder"
                 },
@@ -602,7 +771,7 @@
           "type": "TextBlock",
           "text": "Error: You are no longer authorized to view notifications for **${$root.groupName}** because you are not an owner of the group.",
           "wrap": true
-        }   
+        }
       ],
       "separator": true
     },
@@ -625,17 +794,137 @@
   "originator": "${$root.providerId}"
 }</value>
   </data>
+  <data name="CardTemplate.ThresholdNotificationExpired" xml:space="preserve">
+    <value>{
+      "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+      "type": "AdaptiveCard",
+      "version": "1.0",
+      "createdUtc": "${$root.cardCreatedTime}",
+      "body": [
+        {
+          "type": "Container",
+          "padding": "Small",
+          "items": [
+            {
+              "type": "ColumnSet",
+              "columns": [
+                {
+                  "type": "Column",
+                  "padding": "None",
+                  "width": "auto",
+                  "items": [
+                    {
+                      "type": "Image",
+                      "url": "data:image/png;base64,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",
+                      "altText": "Synchronization Exception Icon",
+                      "size": "Small"
+                    }
+                  ]
+                },
+                {
+                  "type": "Column",
+                  "padding": "None",
+                  "width": "auto",
+                  "items": [
+                    {
+                      "type": "TextBlock",
+                      "text": "Error: Notification Expired",
+                      "wrap": true,
+                      "weight": "Bolder"
+                    },
+                    {
+                      "type": "TextBlock",
+                      "text": "Group Membership Management",
+                      "wrap": true,
+                      "spacing": "None",
+                      "color": "Light",
+                      "size": "Small"
+                    }
+                  ],
+                  "verticalContentAlignment": "Center"
+                }
+              ],
+              "padding": "None"
+            }
+          ],
+          "style": "emphasis"
+        },
+        {
+          "type": "Container",
+          "padding": "Default",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "This notification has expired",
+              "wrap": true,
+              "size": "Large",
+              "weight": "Bolder",
+              "color": "Attention"
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "padding": "Default",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "The time period to address the threshold violation for your GMM managed group **${$root.Id}** managed by GMM has expired and the sync has been purged.",
+              "wrap": true,
+              "spacing": "Small"
+            },
+            {
+              "type": "TextBlock",
+              "text": "If you would like to re-onboard on to GMM, please reach out to the GMM team.",
+              "wrap": true,
+              "spacing": "Small"
+            },
+            {
+              "type": "ActionSet",
+              "actions": [
+                {
+                  "type": "Action.OpenUrl",
+                  "title": "Contact GMM",
+                  "url": "https://microsoft.sharepoint.com/sites/Office365/SitePages/Group-Membership-Management.aspx",
+                  "isPrimary": false
+                }
+              ],
+              "horizontalAlignment": "Center"
+              
+            }
+          ],
+          "separator": true
+        },
+        {
+          "type": "Container",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "${$root.notificationId}",
+              "wrap": true,
+              "horizontalAlignment": "Right",
+              "size": "Small"
+            }
+          ]
+        }
+      ],
+      "padding": "None",
+      "@type": "AdaptiveCard",
+      "@context": "http://schema.org/extensions",
+      "originator": "${$root.providerId}"
+  }</value>
+  </data>
   <data name="CustomerPausedJobEmailBody" xml:space="preserve">
     <value>You received this notification because you are listed as the owner of {0}.
 Your group {0} with Id {1} is currently offboarded from Group Membership Management (GMM) due to one of the following reasons:
 
 •	Group Owner Requested a Pause for more than 30 days.
 •	Source or Destination group has been deleted by group owner
-•	No response from group owner about membership adding/removal threshold hitting 
+•	No response from group owner about membership adding/removal threshold hitting
 
-If you believe this group should be continued managed by Group Membership Management (GMM), please reach out to GMM support before {2} to restore the current onboarding details. Otherwise, you may submit a new GMM onboarding request after the deadline if GMM is still needed. 
+If you believe this group should be continued managed by Group Membership Management (GMM), please reach out to GMM support before {2} to restore the current onboarding details. Otherwise, you may submit a new GMM onboarding request after the deadline if GMM is still needed.
 
-Please feel free to contact GMMSupport if you have any questions. 
+Please feel free to contact GMMSupport if you have any questions.
 
 Thank you,
 GMM Team</value>
@@ -661,7 +950,7 @@ GMM Team</value>
 The group sync will be PAUSED since there is no data to sync to group {0}.
 
 Please reach out to your GMM team to get this issue resolved.
- 
+
 Regards,
 GMM Team</value>
   </data>
@@ -675,7 +964,7 @@ GMM onboarding is requested by {4} to systematically manage the group membership
 
 The group {1} with Id: {0} has completed its initial sync. Added {2} users and removed {3} users.
 
-This is an auto-generated email. Please reach out to the onboarding requestor {4} for any specific questions about this group and reach out to {6} for GMM inquires. 
+This is an auto-generated email. Please reach out to the onboarding requestor {4} for any specific questions about this group and reach out to {6} for GMM inquires.
 
 Regards,
 GMM Team</value>
@@ -701,7 +990,7 @@ This is an auto-generated email. Please reach out to {2} if you have further que
   <data name="SyncJobDisabledEmailBody" xml:space="preserve">
     <value>You received this notification because you are listed as a GMM onboarding requestor or as owner of this group. Please visit {3} to learn more about GMM.
 
-The synchronization job for group {0} with Id: {1} has been disabled. 
+The synchronization job for group {0} with Id: {1} has been disabled.
 
 If you would like to have it re-enabled please reach out to {2}.
 
@@ -717,7 +1006,7 @@ GMM onboarding is requested by {4} to systematically manage the group membership
 
 The group {1} with Id: {0} has started its initial sync.
 
-This is an auto-generated email. Please reach out to the onboarding requestor {4} for any specific questions about this group and reach out to {2} for GMM inquires. 
+This is an auto-generated email. Please reach out to the onboarding requestor {4} for any specific questions about this group and reach out to {2} for GMM inquires.
 
 Regards,
 GMM Team</value>
@@ -743,15 +1032,15 @@ Actions needed - Please 'Reply All' indicating what GMM should do about the thre
 4. The projected increase or decrease does not look right to me. Please do not allow the sync to exceed the threshold. I will contact GMMSupport to follow up.
 
 The group sync will be PAUSED until your response is received.
- 
+
 Regards,
 GMM Team</value>
   </data>
   <data name="SyncThresholdDisablingJobEmailSubject" xml:space="preserve">
-    <value>[THRESHOLD_EXCEEDED] GMM: Synchronization job for group {1} has been disabled.</value>
+    <value>[Action Required] GMM: Synchronization job for group {1} has been disabled.</value>
   </data>
   <data name="SyncThresholdEmailSubject" xml:space="preserve">
-    <value>[THRESHOLD_EXCEEDED] GMM: Action required for group {0}.</value>
+    <value>[Action Required] GMM: Membership Change Alert review for {0}.</value>
   </data>
   <data name="ThresholdNotificationResolution.IgnoreOnce" xml:space="preserve">
     <value>Ignore Thresholds Once</value>

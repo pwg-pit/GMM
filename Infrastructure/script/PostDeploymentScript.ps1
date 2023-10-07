@@ -24,17 +24,17 @@ function PostDeploymentScript {
 	)
 	Write-Host "PostDeploymentScript starting..."
 
-	VerifyKeyVaultSecrets
+	$verbose = ($true -eq $PSBoundParameters.Verbose)
+
+	. ($PSScriptRoot + '\Confirm-KeyVaultSecrets.ps1')
+	Write-Host "Confirm-KeyVaultSecrets starting..."
+	Confirm-KeyVaultSecrets -SolutionAbbreviation $SolutionAbbreviation -EnvironmentAbbreviation $EnvironmentAbbreviation
+	Write-Host "Confirm-KeyVaultSecrets completed."
+
+	. ($PSScriptRoot + '\Copy-SyncJobsToSQL.ps1')
+	Write-Host "Copy-SyncJobsToSQL starting..."
+	Copy-SyncJobsToSQL -SolutionAbbreviation $SolutionAbbreviation -EnvironmentAbbreviation $EnvironmentAbbreviation
+	Write-Host "Copy-SyncJobsToSQL completed."
 
 	Write-Host "PostDeploymentScript completed."
-}
-
-function VerifyKeyVaultSecrets {
-
-	$prereqsKeyVault = "$SolutionAbbreviation-prereqs-$EnvironmentAbbreviation"
-	$graphAppCertificateName = Get-AzKeyVaultSecret -VaultName $prereqsKeyVault -Name "graphAppCertificateName"
-    if(!$graphAppCertificateName){
-		$secret = ConvertTo-SecureString -String 'not-set' -AsPlainText -Force
-		Set-AzKeyVaultSecret -VaultName $prereqsKeyVault -Name "graphAppCertificateName" -SecretValue $secret
-	}
 }

@@ -8,6 +8,7 @@ using Models.AdaptiveCards;
 using AdaptiveCards.Templating;
 using DIConcreteTypes;
 using Microsoft.Extensions.Options;
+using Repositories.Contracts.InjectConfig;
 
 namespace Services.Notifications
 {
@@ -15,26 +16,46 @@ namespace Services.Notifications
     {
         private readonly IGraphGroupRepository _graphGroupRepository;
         private readonly ILocalizationRepository _localizationRepository;
-        private readonly string _hostname;
+        private readonly IHandleInactiveJobsConfig _handleInactiveJobsConfig;
+        private readonly string _apiHostname;
         private readonly Guid _providerId;
 
         public ThresholdNotificationService(
             IOptions<ThresholdNotificationServiceConfig> config,
             IGraphGroupRepository graphGroupRepository,
-            ILocalizationRepository localizationRepository)
+            ILocalizationRepository localizationRepository,
+            IHandleInactiveJobsConfig handleInactiveJobsConfig)
         {
+            _apiHostname = config.Value.ApiHostname;
+            _providerId = config.Value.ActionableEmailProviderId;
             _graphGroupRepository = graphGroupRepository ?? throw new ArgumentNullException(nameof(graphGroupRepository));
             _localizationRepository = localizationRepository ?? throw new ArgumentNullException(nameof(localizationRepository));
-            _hostname = config.Value.Hostname;
-            _providerId = config.Value.ActionableEmailProviderId;
+            _handleInactiveJobsConfig = handleInactiveJobsConfig ?? throw new ArgumentNullException( nameof(handleInactiveJobsConfig));
         }
 
         /// <inheritdoc />
         public async Task<string> CreateNotificationCardAsync(ThresholdNotification notification)
         {
-            var cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotification);
+            string cardJson;
+            if (notification.CardState == ThresholdNotificationCardState.DefaultCard)
+            {
+                cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotification);
+            }
+            else if (notification.CardState == ThresholdNotificationCardState.DisabledCard)
+            {
+                cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotificationDisabled);
+            }
+            else if (notification.CardState == ThresholdNotificationCardState.ExpiredCard)
+            {
+                cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotificationExpired);
+            }
+            else
+            {
+                throw new NotSupportedException("Currently the Notifier trigger only supports NextCardState of DefaultCard and DisabledCard. Please check on this card");
+            }
+
             var groupName = await _graphGroupRepository.GetGroupNameAsync(notification.TargetOfficeGroupId);
-            var cardData = new ThesholdNotificationCardData
+            var cardData = new ThresholdNotificationCardData
             {
                 GroupName = groupName,
                 ChangeQuantityForAdditions = notification.ChangeQuantityForAdditions,
@@ -43,9 +64,12 @@ namespace Services.Notifications
                 ChangePercentageForRemovals = notification.ChangePercentageForRemovals,
                 ThresholdPercentageForAdditions = notification.ThresholdPercentageForAdditions,
                 ThresholdPercentageForRemovals = notification.ThresholdPercentageForRemovals,
-                ApiHostname = _hostname,
+                ApiHostname = _apiHostname,
                 NotificationId = $"{notification.Id}",
-                ProviderId = $"{_providerId}"
+                ProviderId = $"{_providerId}", 
+                CardCreatedTime = DateTime.UtcNow,
+                JobExpirationDate = notification.CardState == ThresholdNotificationCardState.DisabledCard ?
+                    notification.LastUpdatedTime.AddDays(_handleInactiveJobsConfig.NumberOfDaysBeforeDeletion) : DateTime.MinValue
             };
 
             var template = new AdaptiveCardTemplate(cardJson);
@@ -61,7 +85,8 @@ namespace Services.Notifications
             var cardData = new ThesholdNotificationNotFoundCardData
             {
                 NotificationId = $"{notificationId}",
-                ProviderId = $"{_providerId}"
+                ProviderId = $"{_providerId}",
+                CardCreatedTime = DateTime.UtcNow
             };
 
             var template = new AdaptiveCardTemplate(cardJson);
@@ -90,7 +115,8 @@ namespace Services.Notifications
                 ResolvedTime = notification.ResolvedTime.ToString("U"),
                 Resolution = resolution,
                 NotificationId = $"{notification.Id}",
-                ProviderId = $"{_providerId}"
+                ProviderId = $"{_providerId}",
+                CardCreatedTime = DateTime.UtcNow
             };
 
             var template = new AdaptiveCardTemplate(cardJson);
@@ -105,9 +131,26 @@ namespace Services.Notifications
 
             var groupName = await _graphGroupRepository.GetGroupNameAsync(notification.TargetOfficeGroupId);
             var cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotificationUnauthorized);
-            var cardData = new ThesholdNotificationUnauthorizedCardData
+            var cardData = new ThresholdNotificationUnauthorizedCardData
             {
                 GroupName = groupName,
+                NotificationId = $"{notification.Id}",
+                ProviderId = $"{_providerId}",
+                CardCreatedTime = DateTime.UtcNow
+            };
+
+            var template = new AdaptiveCardTemplate(cardJson);
+            var card = template.Expand(cardData);
+
+            return card;
+        }
+
+        public string CreateExpiredNotificationCardAsync(ThresholdNotification notification)
+        {
+            var cardJson = _localizationRepository.TranslateSetting(CardTemplate.ThresholdNotificationExpired);
+            var cardData = new ThresholdNotificationExpiredCardData
+            {
+                GroupId = $"{notification.TargetOfficeGroupId}",
                 NotificationId = $"{notification.Id}",
                 ProviderId = $"{_providerId}"
             };

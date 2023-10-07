@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Models.Helpers;
 
 namespace Hosts.GraphUpdater
 {
@@ -35,9 +36,12 @@ namespace Hosts.GraphUpdater
 
             var request = context.GetInput<CacheUserUpdaterRequest>();
 
-            if (!context.IsReplaying)
-                _ = _loggingRepository.LogMessageAsync(new LogMessage { Message = $"{nameof(CacheUserUpdaterSubOrchestratorFunction)} function started", RunId = request.SyncJob.RunId }, VerbosityLevel.DEBUG);
-
+            await context.CallActivityAsync(nameof(LoggerFunction),
+                                                     new LoggerRequest
+                                                     {
+                                                         Message = $"{nameof(CacheUserUpdaterSubOrchestratorFunction)} function started",
+                                                         SyncJob = request.SyncJob
+                                                     });
             try
             {
                 if (request == null || request.GroupId.ToString() == null)
@@ -54,44 +58,22 @@ namespace Hosts.GraphUpdater
 
                 if (!string.IsNullOrEmpty(fileContent))
                 {
-                    await context.CallActivityAsync(nameof(LoggerFunction),
-                                                       new LoggerRequest
-                                                       {
-                                                           Message = $"{request.UserIds.Count} users to remove from cache/{request.GroupId}",
-                                                           SyncJob = request.SyncJob,
-                                                           Verbosity = VerbosityLevel.DEBUG
-                                                       });
-                    var json = JsonConvert.DeserializeObject<GroupMembership>(fileContent);
-                    var cacheMembers = json.SourceMembers.Distinct().ToList();
-                    await context.CallActivityAsync(nameof(LoggerFunction),
-                                                       new LoggerRequest
-                                                       {
-                                                           Message = $"Earlier count in cache/{request.GroupId}: {cacheMembers.Count}",
-                                                           SyncJob = request.SyncJob,
-                                                           Verbosity = VerbosityLevel.DEBUG
-                                                       });
-                    var newUsers = cacheMembers.Except(request.UserIds).ToList();
-                    await context.CallActivityAsync(nameof(FileUploaderFunction),
-                                                            new FileUploaderRequest
-                                                            {
-                                                                SyncJob = request.SyncJob,
-                                                                ObjectId = request.GroupId,
-                                                                Users = newUsers
-                                                            });
-                    await context.CallActivityAsync(nameof(LoggerFunction),
-                                                       new LoggerRequest
-                                                       {
-                                                           Message = $"New count in cache/{request.GroupId}: {newUsers.Count}",
-                                                           SyncJob = request.SyncJob,
-                                                           Verbosity = VerbosityLevel.DEBUG
-                                                       });
+                    await context.CallActivityAsync(nameof(CacheUpdaterFunction), new CacheUpdaterRequest
+                    {
+                        FileContent = fileContent,
+                        RunId = request.SyncJob.RunId,
+                        UserIds = request.UserIds,
+                        GroupId = request.GroupId,
+                        Timestamp = request.SyncJob.LastSuccessfulStartTime.ToString("MMddyyyy-HHmmss")
+                    });
                 }
 
-                if (!context.IsReplaying) _ = _loggingRepository.LogMessageAsync(
-                    new LogMessage
-                    {
-                        Message = $"{nameof(CacheUserUpdaterSubOrchestratorFunction)} function completed",
-                        RunId = request.SyncJob.RunId }, VerbosityLevel.DEBUG);
+                await context.CallActivityAsync(nameof(LoggerFunction),
+                                                     new LoggerRequest
+                                                     {
+                                                         Message = $"{nameof(CacheUserUpdaterSubOrchestratorFunction)} function completed",
+                                                         SyncJob = request.SyncJob
+                                                     });
             }
 
             catch (FileNotFoundException fe)

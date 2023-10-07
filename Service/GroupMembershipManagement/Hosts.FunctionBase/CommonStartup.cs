@@ -17,12 +17,17 @@ using Repositories.Contracts.InjectConfig;
 using Repositories.Localization;
 using Repositories.Logging;
 using Repositories.Mail;
-using Repositories.SyncJobsRepository;
 using Repositories.NotificationsRepository;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Microsoft.FeatureManagement;
+using Azure.Messaging.ServiceBus;
+using Repositories.EntityFramework.Contexts;
+using Microsoft.EntityFrameworkCore;
+using Repositories.EntityFramework;
+using Repositories.FeatureFlag;
 
 namespace Hosts.FunctionBase
 {
@@ -35,12 +40,17 @@ namespace Hosts.FunctionBase
         {
             builder.ConfigurationBuilder.AddAzureAppConfiguration(options =>
             {
-                options.Connect(new Uri(GetValueOrThrow("appConfigurationEndpoint")), new DefaultAzureCredential());
+                options.Connect(new Uri(GetValueOrThrow("appConfigurationEndpoint")), new DefaultAzureCredential())
+                       .UseFeatureFlags();
             });
         }
 
         public override void Configure(IFunctionsHostBuilder builder)
         {
+            builder.Services.AddAzureAppConfiguration();
+            builder.Services.AddFeatureManagement();
+            builder.Services.AddScoped<IFeatureFlagRepository, FeatureFlagRepository>();
+
             builder.Services.AddLocalization(opts => { opts.ResourcesPath = "Resources"; });
             builder.Services.Configure<RequestLocalizationOptions>(opts =>
             {
@@ -78,6 +88,13 @@ namespace Hosts.FunctionBase
             {
                 settings.Verbosity = configuration.GetValue<VerbosityLevel>("GMM:LoggingVerbosity");
             });
+
+            builder.Services.AddDbContext<GMMContext>(options =>
+                options.UseSqlServer(GetValueOrThrow("ConnectionStrings:JobsContext")),
+                ServiceLifetime.Scoped
+            );
+            builder.Services.AddScoped<IDatabaseSyncJobsRepository, DatabaseSyncJobsRepository>();
+
             builder.Services.AddSingleton<IAppConfigVerbosity>(services =>
             {
                 var creds = services.GetService<IOptions<AppConfigVerbosity>>();
@@ -143,18 +160,6 @@ namespace Hosts.FunctionBase
                         GetValueOrDefault("actionableEmailProviderId"));
             });
 
-            builder.Services.AddOptions<SyncJobRepoCredentials<SyncJobRepository>>().Configure<IConfiguration>((settings, configuration) =>
-                {
-                    settings.ConnectionString = configuration.GetValue<string>("jobsStorageAccountConnectionString");
-                    settings.TableName = configuration.GetValue<string>("jobsTableName");
-                });
-
-            builder.Services.AddSingleton<ISyncJobRepository>(services =>
-            {
-                var creds = services.GetService<IOptions<SyncJobRepoCredentials<SyncJobRepository>>>();
-                return new SyncJobRepository(creds.Value.ConnectionString, creds.Value.TableName, services.GetService<ILoggingRepository>());
-            });
-
             builder.Services.AddOptions<NotificationRepoCredentials<NotificationRepository>>().Configure<IConfiguration>((settings, configuration) =>
             {
                 settings.ConnectionString = configuration.GetValue<string>("jobsStorageAccountConnectionString");
@@ -181,6 +186,18 @@ namespace Hosts.FunctionBase
                 var tc = new TelemetryClient(telemetryConfiguration);
                 tc.Context.Operation.Name = FunctionName;
                 return tc;
+            });
+
+            builder.Services.AddSingleton(services =>
+            {
+                var serviceBusConnectionString = GetValueOrDefault("serviceBusConnectionString");
+                if (string.IsNullOrWhiteSpace(serviceBusConnectionString))
+                    serviceBusConnectionString = GetValueOrDefault("serviceBusTopicConnection");
+
+                if (string.IsNullOrWhiteSpace(serviceBusConnectionString))
+                    throw new ArgumentNullException($"Could not start because of missing configuration option: servicebus connection string");
+
+                return new ServiceBusClient(serviceBusConnectionString);
             });
         }
 

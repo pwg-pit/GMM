@@ -45,6 +45,22 @@ resource functionApp 'Microsoft.Web/sites@2018-02-01' = {
   }
 }
 
+resource snScmBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'scm'
+  properties: {
+    allow: false
+  }
+}
+
+resource snFtpBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'ftp'
+  properties: {
+    allow: false
+  }
+}
+
 module secretsTemplate 'keyVaultSecrets.bicep' = {
   name: 'secretsTemplate-GraphUpdater'
   scope: resourceGroup(dataKeyVaultResourceGroup)
@@ -98,6 +114,16 @@ resource functionAppSlotConfig 'Microsoft.Web/sites/config@2021-03-01' = {
       'AzureWebJobs.JobReaderFunction.Disabled'
       'AzureWebJobs.JobStatusUpdaterFunction.Disabled'
       'AzureWebJobs.LoggerFunction.Disabled'
+      'AzureWebJobs.CacheUpdaterFunction.Disabled'
+      'AzureWebJobs.CacheUserUpdaterSubOrchestratorFunction.Disabled'
+      'AzureWebJobs.MessageEntity.Disabled'
+      'AzureWebJobs.MessageOrchestrator.Disabled'
+      'AzureWebJobs.MessageProcessorOrchestrator.Disabled'
+      'AzureWebJobs.MessageTrackerFunction.Disabled'
+      'AzureWebJobs.StatusReaderFunction.Disabled'
+      'AzureWebJobs.TelemetryTrackerFunction.Disabled'
+      'AzureWebJobsStorage'
+      'AzureFunctionsWebHost__hostid'
     ]
   }
 }

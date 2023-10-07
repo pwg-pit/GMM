@@ -6,8 +6,7 @@
     "graphCredentials:KeyVaultName": "",
     "graphCredentials:KeyVaultTenantId": "",
     "appConfigurationEndpoint": "",
-    "jobsStorageAccountConnectionString": "",
-    "jobsTableName": "",
+    "ConnectionStrings:JobsContext": "",
     "graphCredentials:ClientSecret": "",
     "graphCredentials:ClientId": "",
     "graphCredentials:TenantId": "",
@@ -20,6 +19,8 @@
     "supportEmailAddresses": "",
     "membershipStorageAccountName": "",
     "membershipContainerName": "",
-    "actionableEmailProviderId": ""
+    "actionableEmailProviderId": "", 
+    "serviceBusConnectionString": "",
+    "serviceBusMembershipUpdatersTopic": ""
   }
 }

@@ -1,25 +1,51 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { DetailsList, DetailsListLayoutMode } from '@fluentui/react/lib/DetailsList';
+import {
+  DetailsListLayoutMode,
+  IColumn,
+  SelectionMode,
+} from '@fluentui/react/lib/DetailsList';
 import { useTranslation } from 'react-i18next';
 import '../../i18n/config';
-import { useEffect } from 'react'
-import { useSelector, useDispatch } from 'react-redux'
-import { fetchJobs } from '../../store/jobs.api'
-import { selectAllJobs } from '../../store/jobs.slice'
-import { AppDispatch } from "../../store";
-import Loader from '../Loader';
+import { useEffect, useState } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import { OdataQueryOptions, fetchJobs } from '../../store/jobs.api';
+import {
+  selectAllJobs,
+  selectGetJobsError,
+  setGetJobsError,
+  getTotalNumberOfPages,
+} from '../../store/jobs.slice';
+import { AppDispatch } from '../../store';
+
 import { useNavigate } from 'react-router-dom';
-import { classNamesFunction, IProcessedStyleSet } from "@fluentui/react";
-import { useTheme } from "@fluentui/react/lib/Theme";
+import {
+  classNamesFunction,
+  IProcessedStyleSet,
+  MessageBar,
+  MessageBarType,
+  IconButton,
+  IIconProps,
+} from '@fluentui/react';
+import { useTheme } from '@fluentui/react/lib/Theme';
+import { Text } from '@fluentui/react/lib/Text';
+import { ShimmeredDetailsList } from '@fluentui/react/lib/ShimmeredDetailsList';
 import {
   IJobsListProps,
   IJobsListStyleProps,
   IJobsListStyles,
-} from "./JobsList.types";
+} from './JobsList.types';
+import {
+  ReportHackedIcon,
+  ChevronRightMedIcon,
+} from '@fluentui/react-icons-mdl2';
+import { useCookies } from 'react-cookie';
+import { PagingBar } from '../PagingBar';
+import { PageVersion } from '../PageVersion';
+import { JobsListFilter } from '../JobsListFilter/JobsListFilter';
+import { SyncStatus } from '../../models/Status';
 
-  
 const getClassNames = classNamesFunction<
   IJobsListStyleProps,
   IJobsListStyles
@@ -39,59 +65,382 @@ export const JobsListBase: React.FunctionComponent<IJobsListProps> = (
   );
 
   const { t } = useTranslation();
-  var toggleSelection = t('toggleSelection');
-  var toggleAllSelection = t('toggleAllSelection');
-  var selectRow = t('selectRow');
+  const dispatch = useDispatch<AppDispatch>();
+  const jobs = useSelector(selectAllJobs);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageSize, setPageSize] = useState('10');
+  const totalNumberOfPages = useSelector(getTotalNumberOfPages);
+  const navigate = useNavigate();
 
-  var columns = [
-    { key: 'column1', name: 'Identifier', fieldName: 'targetGroupId', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column2', name: 'ObjectType', fieldName: 'targetGroupType', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column3', name: 'InitialOnboardingTime', fieldName: 'startDate', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column4', name: 'Status', fieldName: 'status', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column5', name: 'LastSuccessfulStartTime', fieldName: 'lastSuccessfulStartTime', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column6', name: 'LastSuccessfulRunTime', fieldName: 'lastSuccessfulRunTime', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column7', name: 'EstimatedNextRunTime', fieldName: 'estimatedNextRunTime', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column8', name: 'ThresholdIncrease', fieldName: 'thresholdPercentageForAdditions', minWidth: 100, maxWidth: 200, isResizable: true },
-    { key: 'column9', name: 'ThresholdDecrease', fieldName: 'thresholdPercentageForRemovals', minWidth: 100, maxWidth: 200, isResizable: true }
+  const [filterStatus, setFilterStatus] = useState<string | undefined>(
+    undefined
+  );
+  const [filterActionRequired, setFilterActionRequired] = useState<
+    string | undefined
+  >(undefined);
+  const [filterID, setFilterID] = useState<string | undefined>(undefined);
+
+  const [sortKey, setSortKey] = useState<string | undefined>(undefined);
+  const [isSortedDescending, setIsSortedDescending] = useState(false);
+  const [isShimmerEnabled, setIsShimmerEnabled] = useState(false);
+  const items = jobs;
+
+  const columns = [
+    {
+      key: 'targetGroupType',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.type'),
+      fieldName: 'targetGroupType',
+      minWidth: 109,
+      maxWidth: 109,
+      isResizable: true,
+      isSorted: sortKey === 'targetGroupType',
+      isSortedDescending,
+      columnActionsMode: 0,
+    },
+    {
+      key: 'targetGroupName',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.name'),
+      fieldName: 'targetGroupName',
+      minWidth: 439,
+      isResizable: true,
+      isSorted: sortKey === 'targetGroupName',
+      isSortedDescending,
+      columnActionsMode: 0,
+    },
+    {
+      key: 'lastSuccessfulRunTime',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.lastRun'),
+      fieldName: 'lastSuccessfulRunTime',
+      minWidth: 114,
+      maxWidth: 114,
+      isResizable: true,
+      isSorted: sortKey === 'lastSuccessfulRunTime',
+      isSortedDescending,
+      showSortIconWhenUnsorted: true,
+    },
+    {
+      key: 'estimatedNextRunTime',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.nextRun'),
+      fieldName: 'estimatedNextRunTime',
+      minWidth: 123,
+      maxWidth: 123,
+      isResizable: true,
+      isSorted: sortKey === 'estimatedNextRunTime',
+      isSortedDescending,
+      columnActionsMode: 0,
+    },
+    {
+      key: 'enabledOrNot',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.status'),
+      fieldName: 'enabledOrNot',
+      minWidth: 83,
+      maxWidth: 83,
+      isResizable: true,
+      isSorted: sortKey === 'enabledOrNot',
+      isSortedDescending,
+      columnActionsMode: 0,
+    },
+    {
+      key: 'actionRequired',
+      name: t('JobsList.ShimmeredDetailsList.columnNames.actionRequired'),
+      fieldName: 'actionRequired',
+      minWidth: 200,
+      maxWidth: 200,
+      isResizable: true,
+      isSorted: sortKey === 'actionRequired',
+      isSortedDescending,
+      columnActionsMode: 0,
+    },
+    {
+      key: 'arrow',
+      name: '',
+      fieldName: '',
+      minWidth: 20,
+      maxWidth: 20,
+      isResizable: true,
+      columnActionsMode: 0,
+    },
   ];
 
-  const dispatch = useDispatch<AppDispatch>()
-  const jobs = useSelector(selectAllJobs)
-  const navigate = useNavigate()
-  
-  useEffect(() => {
-    if (!jobs){
-      dispatch(fetchJobs())
+  const sortedItems = [...(items ? items : [])].sort((a, b) => {
+    if (
+      sortKey === 'enabledOrNot' ||
+      sortKey === 'lastSuccessfulRunTime' ||
+      sortKey === 'estimatedNextRunTime' ||
+      sortKey === 'targetGroupName' ||
+      sortKey === 'targetGroupType' ||
+      sortKey === 'actionRequired'
+    ) {
+      return isSortedDescending
+        ? (b[sortKey] || '').localeCompare(a[sortKey] || '')
+        : (a[sortKey] || '').localeCompare(b[sortKey] || '');
     }
-}, [dispatch])
+    return 0;
+  });
 
-const onItemClicked = (item?: any, index?: number, ev?: React.FocusEvent<HTMLElement>): void => {
-  navigate('/JobDetailsPage', { replace: false, state: {item: item} })
-} 
+  const [cookies, setCookie] = useCookies(['pageSize']);
+  const setPageSizeCookie = (pageSize: string): void => {
+    setCookie('pageSize', pageSize, { path: '/' });
+  };
 
-if (jobs && jobs.length > 0) {
+  function onColumnHeaderClick(event?: any, column?: IColumn) {
+    if (column) {
+      let isSortedDescending = !!column.isSorted && !column.isSortedDescending;
+      setIsSortedDescending(isSortedDescending);
+      setSortKey(column.key);
+      getJobsByPage();
+    }
+  }
+
+  const error = useSelector(selectGetJobsError);
+
+  const onDismiss = (): void => {
+    dispatch(setGetJobsError());
+  };
+
+  const getJobsByPage = (): void => {
+    setIsShimmerEnabled(true);
+    let orderByString: string | undefined = undefined;
+    if (sortKey !== undefined) {
+      orderByString = sortKey + (isSortedDescending ? ' desc' : '');
+    }
+
+    console.log(filterActionRequired);
+    let filterString: string | undefined = undefined;
+    if (filterID !== undefined && filterID !== '')
+      filterString = 'targetOfficeGroupId eq ' + filterID;
+    if (
+      filterActionRequired !== undefined &&
+      filterActionRequired !== '' &&
+      filterActionRequired !== 'All'
+    )
+      filterString =
+        (filterString === undefined ? '' : filterString + ' and ') +
+        "status eq '" +
+        filterActionRequired +
+        "'";
+    if (
+      filterStatus !== undefined &&
+      filterStatus !== '' &&
+      filterStatus !== 'All'
+    ) {
+      if (filterStatus === 'Enabled')
+        filterString =
+          (filterString === undefined ? '' : filterString + ' and ') +
+          "status eq '" +
+          SyncStatus.Idle +
+          "' or status eq '" +
+          SyncStatus.InProgress +
+          "'";
+      else if (filterStatus === 'Disabled')
+        filterString =
+          (filterString === undefined ? '' : filterString + ' and ') +
+          "not (status eq '" +
+          SyncStatus.Idle +
+          "' or status eq '" +
+          SyncStatus.InProgress +
+          "')";
+    }
+
+    let odataQueryOptions = new OdataQueryOptions();
+    odataQueryOptions.pageSize = parseInt(pageSize) ?? cookies.pageSize;
+    odataQueryOptions.itemsToSkip =
+      (pageNumber - 1) * odataQueryOptions.pageSize;
+    odataQueryOptions.orderBy = orderByString;
+    odataQueryOptions.filter = filterString;
+
+    dispatch(fetchJobs(odataQueryOptions));
+  };
+
+  useEffect(() => {
+    if (
+      cookies.pageSize === undefined ||
+      cookies.pageSize === 'undefined' ||
+      cookies.pageSize === ''
+    ) {
+      setPageSizeCookie('10');
+    } else {
+      setPageSize(cookies.pageSize);
+    }
+
+    if (!jobs) {
+      getJobsByPage();
+    } else {
+      setIsShimmerEnabled(false);
+    }
+  }, [dispatch, jobs]);
+
+  const onItemClicked = (
+    item?: any,
+    index?: number,
+    ev?: React.FocusEvent<HTMLElement>
+  ): void => {
+    navigate('/JobDetails', { replace: false, state: { item: item } });
+  };
+
+  const onRefreshClicked = (
+    item?: any,
+    index?: number,
+    ev?: React.FocusEvent<HTMLElement>
+  ): void => {
+    dispatch(fetchJobs());
+  };
+
+  const refreshIcon: IIconProps = { iconName: 'Refresh' };
+
+  const _renderItemColumn = (
+    item?: any,
+    index?: number,
+    column?: IColumn
+  ): JSX.Element => {
+    const fieldContent = item[column?.fieldName as keyof any] as string;
+
+    switch (column?.key) {
+      case 'lastSuccessfulRunTime':
+      case 'estimatedNextRunTime':
+        const spaceIndex = fieldContent.indexOf(' ');
+        const isEmpty = fieldContent === '';
+        const lastOrNextRunDate = isEmpty
+          ? '-'
+          : fieldContent.substring(0, spaceIndex);
+        const hoursAgoOrHoursLeft = isEmpty
+          ? ''
+          : fieldContent.substring(spaceIndex + 1);
+
+        return (
+          <div>
+            <div>{lastOrNextRunDate}</div>
+            <div>{hoursAgoOrHoursLeft}</div>
+          </div>
+        );
+
+      case 'enabledOrNot':
+        return (
+          <div>
+            {fieldContent === 'Disabled' ? (
+              <div className={classNames.disabled}> {fieldContent}</div>
+            ) : (
+              <div className={classNames.enabled}> {fieldContent}</div>
+            )}
+          </div>
+        );
+
+      case 'actionRequired':
+        return (
+          <div>
+            {fieldContent ? (
+              <div className={classNames.actionRequired}>
+                {' '}
+                <ReportHackedIcon /> {fieldContent}
+              </div>
+            ) : (
+              <div className={classNames.actionRequired}> {fieldContent}</div>
+            )}
+          </div>
+        );
+
+      case 'arrow':
+        return fieldContent ? (
+          <IconButton
+            iconProps={refreshIcon}
+            title="Refresh"
+            ariaLabel="Refresh"
+            onClick={onRefreshClicked}
+          />
+        ) : (
+          <ChevronRightMedIcon />
+        );
+
+      default:
+        return <span>{fieldContent}</span>;
+    }
+  };
+
   return (
     <div className={classNames.root}>
-          <DetailsList
-            items={jobs}
-            columns={columns}
-            setKey="set"
-            layoutMode={DetailsListLayoutMode.justified}
-            selectionPreservedOnEmptyClick={true}
-            ariaLabelForSelectionColumn={toggleSelection}
-            ariaLabelForSelectAllCheckbox={toggleAllSelection}
-            checkButtonAriaLabel={selectRow}
-            onActiveItemChanged={onItemClicked} 
+      <div className={classNames.jobsListFilter}>
+        <JobsListFilter
+          setFilterStatus={setFilterStatus}
+          setFilterActionRequired={setFilterActionRequired}
+          setFilterID={setFilterID}
+          getJobsByPage={getJobsByPage}
+          filterActionRequired={filterActionRequired}
+          filterID={filterID}
+          filterStatus={filterStatus}
         />
       </div>
-  );
-}
-else {
-  return(
-    <div>
-      <Loader />
+      <div className={classNames.jobsList}>
+        <div>
+          {error && (
+            <MessageBar
+              className={classNames.errorMessageBar}
+              messageBarType={MessageBarType.error}
+              isMultiline={false}
+              onDismiss={onDismiss}
+              dismissButtonAriaLabel={
+                t('JobsList.MessageBar.dismissButtonAriaLabel') as
+                  | string
+                  | undefined
+              }
+            >
+              {error}
+            </MessageBar>
+          )}
+          <div className={classNames.title}>
+            <Text variant="xLarge">{t('JobsList.listOfMemberships')}</Text>
+          </div>
+          <div className={classNames.tabContent}>
+            <ShimmeredDetailsList
+              setKey="set"
+              onColumnHeaderClick={onColumnHeaderClick}
+              items={sortedItems || []}
+              columns={columns}
+              enableShimmer={!jobs || isShimmerEnabled}
+              layoutMode={DetailsListLayoutMode.justified}
+              selectionMode={SelectionMode.none}
+              ariaLabelForShimmer="Content is being fetched"
+              ariaLabelForGrid="Item details"
+              selectionPreservedOnEmptyClick={true}
+              ariaLabelForSelectionColumn={
+                t('JobsList.ShimmeredDetailsList.toggleSelection') as
+                  | string
+                  | undefined
+              }
+              ariaLabelForSelectAllCheckbox={
+                t('JobsList.ShimmeredDetailsList.toggleAllSelection') as
+                  | string
+                  | undefined
+              }
+              checkButtonAriaLabel={
+                t('JobsList.ShimmeredDetailsList.selectRow') as
+                  | string
+                  | undefined
+              }
+              onActiveItemChanged={onItemClicked}
+              onRenderItemColumn={_renderItemColumn}
+            />
+
+            {jobs?.length === 0 && (
+              <div className={classNames.noMembershipsFoundText}>
+                <Text variant="medium">{t('JobsList.NoResults')}</Text>
+              </div>
+            )}
+            <div className={classNames.columnToEnd}></div>
+          </div>
+        </div>
+      </div>
+      <div className={classNames.footer}>
+        <PageVersion />
+        <PagingBar
+          pageSize={pageSize}
+          pageNumber={pageNumber}
+          totalNumberOfPages={totalNumberOfPages ?? 1}
+          getJobsByPage={getJobsByPage}
+          setPageSize={setPageSize}
+          setPageNumber={setPageNumber}
+          setPageSizeCookie={setPageSizeCookie}
+        />
+      </div>
     </div>
   );
-}
-  
-}
+};

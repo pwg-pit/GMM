@@ -29,7 +29,7 @@ namespace Services.Tests
             var mockGraphGroup = new Mock<IGraphGroupRepository>();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
             var samplePageResponse = GetPageSampleResponse(100, true);
             var userCount = 100;
             mockGraphGroup.Setup(x => x.GetFirstTransitiveMembersPageAsync(It.IsAny<Guid>())).ReturnsAsync(samplePageResponse);
@@ -58,7 +58,7 @@ namespace Services.Tests
             var mockGraphGroup = new Mock<IGraphGroupRepository>();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
             var samplePageResponse = GetPageSampleResponse(100, true);
             var userCount = 100;
             mockGraphGroup.Setup(x => x.GetNextTransitiveMembersPageAsync(It.IsAny<string>())).ReturnsAsync(samplePageResponse);
@@ -82,7 +82,7 @@ namespace Services.Tests
             var mockGraphGroup = new MockGraphGroupRepository();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup, mockMail, mailSenders, mockSynJobs);
 
@@ -93,38 +93,7 @@ namespace Services.Tests
 
             var response = await graphUpdaterService.GroupExistsAsync(groupId, runId);
 
-            Assert.IsTrue(response.Result);
-        }
-
-        [TestMethod]
-        public async Task GroupExistsSocketExceptionTest()
-        {
-            var mockLogs = new MockLoggingRepository();
-            var telemetryClient = new TelemetryClient(TelemetryConfiguration.CreateDefault());
-            var mockGraphGroup = new Mock<IGraphGroupRepository>();
-            var mockMail = new MockMailRepository();
-            var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
-
-
-            var attemptNumber = 1;
-            mockGraphGroup.Setup(x => x.GroupExists(It.IsAny<Guid>())).Callback(() =>
-            {
-                if (attemptNumber == 1)
-                {
-                    attemptNumber++;
-                    throw new SocketException();
-                }
-            }).ReturnsAsync(true);
-
-            var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup.Object, mockMail, mailSenders, mockSynJobs);
-
-            var groupId = Guid.NewGuid();
-            var runId = Guid.NewGuid();
-            var response = await graphUpdaterService.GroupExistsAsync(groupId, runId);
-
-            Assert.IsTrue(response.Result);
-            Assert.IsTrue(mockLogs.MessagesLogged.Any(x => x.Message.Contains("Got a transient SocketException")));
+            Assert.IsTrue(response);
         }
 
         [TestMethod]
@@ -135,7 +104,7 @@ namespace Services.Tests
             var mockGraphGroup = new MockGraphGroupRepository();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup, mockMail, mailSenders, mockSynJobs);
 
@@ -155,16 +124,16 @@ namespace Services.Tests
             var mockGraphGroup = new MockGraphGroupRepository();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup, mockMail, mailSenders, mockSynJobs);
 
             var runId = Guid.NewGuid();
             var lastRunTime = DateTime.UtcNow.AddDays(-1);
-            var job = new SyncJob { PartitionKey = "00-00-00", RowKey = Guid.NewGuid().ToString(), Status = SyncStatus.InProgress.ToString(), LastRunTime = lastRunTime };
+            var job = new SyncJob { Id = Guid.NewGuid(), Status = SyncStatus.InProgress.ToString(), LastRunTime = lastRunTime };
 
-            mockSynJobs.ExistingSyncJobs.Add((job.PartitionKey, job.RowKey), job);
+            await mockSynJobs.AddSyncJobAsync(job);
 
             await graphUpdaterService.UpdateSyncJobStatusAsync(job, SyncStatus.Idle, false, runId);
 
@@ -182,15 +151,15 @@ namespace Services.Tests
             var mockGraphGroup = new MockGraphGroupRepository();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup, mockMail, mailSenders, mockSynJobs);
 
             var runId = Guid.NewGuid();
             var lastRunTime = DateTime.UtcNow.AddDays(-1);
-            var job = new SyncJob { PartitionKey = "00-00-00", RowKey = Guid.NewGuid().ToString(), Status = SyncStatus.InProgress.ToString(), DryRunTimeStamp = lastRunTime };
+            var job = new SyncJob { Id = Guid.NewGuid(), DryRunTimeStamp = lastRunTime };
 
-            mockSynJobs.ExistingSyncJobs.Add((job.PartitionKey, job.RowKey), job);
+            await mockSynJobs.AddSyncJobAsync(job);
 
             await graphUpdaterService.UpdateSyncJobStatusAsync(job, SyncStatus.Idle, true, runId);
 
@@ -208,15 +177,15 @@ namespace Services.Tests
             var mockGraphGroup = new MockGraphGroupRepository();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup, mockMail, mailSenders, mockSynJobs);
             var lastRunTime = DateTime.UtcNow.AddDays(-1);
-            var job = new SyncJob { PartitionKey = "00-00-00", RowKey = Guid.NewGuid().ToString(), Status = SyncStatus.InProgress.ToString(), LastRunTime = lastRunTime };
+            var job = new SyncJob { Id = Guid.NewGuid(), Status = SyncStatus.InProgress.ToString(), LastRunTime = lastRunTime };
 
-            mockSynJobs.ExistingSyncJobs.Add((job.PartitionKey, job.RowKey), job);
+            await mockSynJobs.AddSyncJobAsync(job);
 
-            var response = await graphUpdaterService.GetSyncJobAsync(job.PartitionKey, job.RowKey);
+            var response = await graphUpdaterService.GetSyncJobAsync(job.Id);
 
             Assert.IsNotNull(response);
             Assert.AreEqual(job.Status, response.Status);
@@ -231,7 +200,7 @@ namespace Services.Tests
             var mockGraphGroup = new Mock<IGraphGroupRepository>();
             var mockMail = new MockMailRepository();
             var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
-            var mockSynJobs = new MockSyncJobRepository();
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
 
             var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup.Object, mockMail, mailSenders, mockSynJobs);
 
@@ -250,7 +219,7 @@ namespace Services.Tests
 
             string nextPageUrl = null;
             var users = new List<AzureADUser>();
-            var nonUserGraphObjects = new Dictionary<string, int>();            
+            var nonUserGraphObjects = new Dictionary<string, int>();
 
             for (int i = 0; i < userCount; i++)
             {
@@ -263,6 +232,46 @@ namespace Services.Tests
             }
 
             return (users, nonUserGraphObjects, nextPageUrl);
+        }
+
+        [TestMethod]
+        public async Task IsEmailRecipientOwnerOfGroupAsync_ShouldReturnTrue_WhenRecipientIsOwner()
+        {
+            var mockLogs = new MockLoggingRepository();
+            var telemetryClient = new TelemetryClient(TelemetryConfiguration.CreateDefault());
+            var mockGraphGroup = new Mock<IGraphGroupRepository>();
+            var mockMail = new MockMailRepository();
+            var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
+
+            var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup.Object, mockMail, mailSenders, mockSynJobs);
+
+            var groupOwner = "owner@test.com";
+            mockGraphGroup.Setup(x => x.IsEmailRecipientOwnerOfGroupAsync(It.IsAny<String>(), It.IsAny<Guid>())).ReturnsAsync(true);
+
+            var response = await graphUpdaterService.IsEmailRecipientOwnerOfGroupAsync(groupOwner, Guid.NewGuid());
+
+            Assert.IsTrue(response);
+        }
+
+        [TestMethod]
+        public async Task IsEmailRecipientOwnerOfGroupAsync_ShouldReturnFalse_WhenRecipientIsNotOwner()
+        {
+            var mockLogs = new MockLoggingRepository();
+            var telemetryClient = new TelemetryClient(TelemetryConfiguration.CreateDefault());
+            var mockGraphGroup = new Mock<IGraphGroupRepository>();
+            var mockMail = new MockMailRepository();
+            var mailSenders = new EmailSenderRecipient("sender@domain.com", "fake_pass", "recipient@domain.com", "recipient@domain.com", "recipient@domain.com");
+            var mockSynJobs = new MockDatabaseSyncJobRepository();
+
+            var graphUpdaterService = new GraphUpdaterService(mockLogs, telemetryClient, mockGraphGroup.Object, mockMail, mailSenders, mockSynJobs);
+
+            var groupOwner = "nonowner@test.com";
+            mockGraphGroup.Setup(x => x.IsEmailRecipientOwnerOfGroupAsync(It.IsAny<String>(), It.IsAny<Guid>())).ReturnsAsync(false);
+
+            var response = await graphUpdaterService.IsEmailRecipientOwnerOfGroupAsync(groupOwner, Guid.NewGuid());
+
+            Assert.IsFalse(response);
         }
     }
 }

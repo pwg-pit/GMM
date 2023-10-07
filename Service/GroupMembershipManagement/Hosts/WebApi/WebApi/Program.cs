@@ -1,27 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using Azure.Identity;
-using WebApi.Configuration;
+using Common.DependencyInjection;
+using DIConcreteTypes;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.Versioning;
+using Microsoft.AspNetCore.OData;
+using Microsoft.AspNetCore.OData.Routing.Conventions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.Graph;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Logging;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.O365.ActionableMessages.Utilities;
 using Microsoft.OpenApi.Models;
 using Repositories.Contracts;
-using Repositories.Logging;
-using Microsoft.Extensions.Options;
-using DIConcreteTypes;
-using Repositories.SyncJobsRepository;
-using Microsoft.AspNetCore.OData;
-using Common.DependencyInjection;
-using Microsoft.Graph;
+using Repositories.Contracts.InjectConfig;
+using Repositories.EntityFramework;
+using Repositories.EntityFramework.Contexts;
 using Repositories.GraphGroups;
+using Repositories.Localization;
+using Repositories.Logging;
+using Repositories.NotificationsRepository;
 using Services.Contracts.Notifications;
 using Services.Notifications;
-using Repositories.NotificationsRepository;
-using Repositories.Localization;
+using WebApi.Configuration;
+using WebApi.Models;
 
 namespace WebApi
 {
@@ -29,32 +40,74 @@ namespace WebApi
     {
         public static void Main(string[] args)
         {
-            var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(args);
+            var builder = WebApplication.CreateBuilder(args);
 
-            var azureADConfigSection = builder.Configuration.GetSection("AzureAd");
-            var tenantId = azureADConfigSection.GetValue<string>("TenantId");
-            var clientId = azureADConfigSection.GetValue<string>("ClientId");
-            var instanceUrl = azureADConfigSection.GetValue<string>("Instance");
-            instanceUrl += instanceUrl.Last() == '/' ? string.Empty : "/";
+            var azureAdConfigSection = builder.Configuration.GetSection("AzureAd");
+            var azureAdTenantId = azureAdConfigSection.GetValue<string>("TenantId");
+            var azureAdClientId = azureAdConfigSection.GetValue<string>("ClientId");
+            var azureAdInstanceUrl = azureAdConfigSection.GetValue<string>("Instance");
+            azureAdInstanceUrl += azureAdInstanceUrl.Last() == '/' ? string.Empty : "/";
+
+            var apiHostName = builder.Configuration.GetValue<string>("Settings:ApiHostname");
+            var secureApiHostName = $"https://{apiHostName}";
+
+            builder.Services.AddDbContext<GMMContext>(options =>
+                options.UseSqlServer(builder.Configuration.GetConnectionString("JobsContext")));
 
             builder.Services.Configure<WebAPISettings>(builder.Configuration.GetSection("WebAPI:Settings"));
             builder.Configuration.AddAzureAppConfiguration(options =>
             {
                 var appConfigurationEndpoint = builder.Configuration.GetValue<string>("Settings:appConfigurationEndpoint");
                 options.Connect(new Uri(appConfigurationEndpoint), new DefaultAzureCredential())
-                       .Select("WebAPI:*")
-                       .ConfigureRefresh(refreshOptions =>
-                        {
-                            refreshOptions.Register("WebAPI:Settings:Sentinel", refreshAll: true);
-                        });
+                    .Select("WebAPI:*")
+                    .ConfigureRefresh(refreshOptions =>
+                    {
+                        refreshOptions.Register("WebAPI:Settings:Sentinel", refreshAll: true);
+                    });
             });
 
             // Add services to the container.
             builder.Services.AddAzureAppConfiguration();
 
+            builder.Services.AddSingleton(sp =>
+            {
+                var telemetryConfiguration = new TelemetryConfiguration();
+                telemetryConfiguration.InstrumentationKey = builder.Configuration.GetValue<string>("APPINSIGHTS_INSTRUMENTATIONKEY");
+                telemetryConfiguration.TelemetryInitializers.Add(new OperationCorrelationTelemetryInitializer());
+                var tc = new TelemetryClient(telemetryConfiguration);
+                tc.Context.Operation.Name = "WebAPI";
+                return tc;
+            });
+
             builder.Services
-               .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-               .AddMicrosoftIdentityWebApi(azureADConfigSection);
+                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                .AddMicrosoftIdentityWebApi(azureAdConfigSection);
+
+            builder.Services.AddSingleton<ActionableMessageTokenValidator>();
+
+            builder.Services.Configure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, async options =>
+            {
+                var tenantSigningKeys = await GetSigningKeysFromUrlAsync($"{azureAdInstanceUrl}{azureAdTenantId}/.well-known/openid-configuration");
+                var tenantSigningKeysv2 = await GetSigningKeysFromUrlAsync($"{azureAdInstanceUrl}{azureAdTenantId}/v2.0/.well-known/openid-configuration");
+                var officeSigningKeys = await GetSigningKeysFromUrlAsync("https://substrate.office.com/sts/common/.well-known/openid-configuration");
+
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateAudience = true,
+                    ValidAudiences = new[] {
+                        $"api://{azureAdClientId}",
+                        azureAdClientId,
+                        secureApiHostName
+                    },
+                    ValidateIssuer = true,
+                    ValidIssuers = new[] {
+                        $"https://sts.windows.net/{azureAdTenantId}/",
+                        "https://substrate.office.com/sts/"
+                    },
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKeys = tenantSigningKeys.Concat(tenantSigningKeysv2).Concat(officeSigningKeys)
+                };
+            });
 
             builder.Services.AddApiVersioning(opt =>
                 {
@@ -72,10 +125,16 @@ namespace WebApi
             });
 
             builder.Services.AddControllers()
-                            .AddOData(options => options.Select().Filter());
+                            .AddOData(options =>
+                            {
+                                options.Select().Filter().OrderBy().SetMaxTop(100);
+                            });
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen(options =>
             {
+                // Hide ODataQueryOptions in Swagger
+                options.OperationFilter<IgnoreODataQueryOptionsOperationFilter>();
+
                 // Enabled OAuth security in Swagger
                 options.AddSecurityDefinition("WebApiAuth2", new OpenApiSecurityScheme
                 {
@@ -84,8 +143,8 @@ namespace WebApi
                     {
                         Implicit = new OpenApiOAuthFlow()
                         {
-                            AuthorizationUrl = new Uri($"{instanceUrl}{tenantId}/oauth2/authorize"),
-                            TokenUrl = new Uri($"{instanceUrl}{tenantId}/oauth2/token")
+                            AuthorizationUrl = new Uri($"{azureAdInstanceUrl}{azureAdTenantId}/oauth2/authorize"),
+                            TokenUrl = new Uri($"{azureAdInstanceUrl}{azureAdTenantId}/oauth2/token")
                         }
                     }
                 });
@@ -128,17 +187,6 @@ namespace WebApi
                 return new LoggingRepository(settings.Value);
             });
 
-            builder.Services.AddOptions<SyncJobRepoCredentials<SyncJobRepository>>().Configure<IConfiguration>((settings, configuration) =>
-            {
-                settings.ConnectionString = configuration.GetValue<string>("Settings:jobsStorageAccountConnectionString");
-                settings.TableName = configuration.GetValue<string>("Settings:jobsTableName");
-            })
-            .Services.AddSingleton<ISyncJobRepository>(services =>
-            {
-                var settings = services.GetRequiredService<IOptions<SyncJobRepoCredentials<SyncJobRepository>>>();
-                return new SyncJobRepository(settings.Value.ConnectionString, settings.Value.TableName, services.GetService<ILoggingRepository>());
-            });
-
             builder.Services.AddOptions<NotificationRepoCredentials<NotificationRepository>>().Configure<IConfiguration>((settings, configuration) =>
             {
                 settings.ConnectionString = configuration.GetValue<string>("Settings:jobsStorageAccountConnectionString");
@@ -153,13 +201,35 @@ namespace WebApi
             })
             .AddScoped<IGraphGroupRepository, GraphGroupRepository>();
 
+
+            builder.Services.AddOptions<HandleInactiveJobsConfig>().Configure<IConfiguration>((settings, configuration) =>
+            {
+                settings.HandleInactiveJobsEnabled = GetBoolSetting(configuration, "AzureMaintenance:HandleInactiveJobsEnabled", false);
+                settings.NumberOfDaysBeforeDeletion = GetIntSetting(configuration, "AzureMaintenance:NumberOfDaysBeforeDeletion", 0);
+            });
+
+            builder.Services.AddOptions<WebApiSettings>().Configure<IConfiguration>((settings, configuration) =>
+            {
+                settings.ApiHostname = configuration.GetValue<string>("Settings:apiHostname");
+            });
+
+            builder.Services.AddSingleton<IHandleInactiveJobsConfig>(services =>
+            {
+                return new HandleInactiveJobsConfig(
+                    services.GetService<IOptions<HandleInactiveJobsConfig>>().Value.HandleInactiveJobsEnabled,
+                    services.GetService<IOptions<HandleInactiveJobsConfig>>().Value.NumberOfDaysBeforeDeletion);
+            });
+
             builder.Services.AddOptions<ThresholdNotificationServiceConfig>().Configure<IConfiguration>((settings, configuration) =>
             {
                 settings.ActionableEmailProviderId = configuration.GetValue<Guid>("Settings:ActionableEmailProviderId");
-                settings.Hostname = configuration.GetValue<string>("Settings:Hostname");
+                settings.ApiHostname = apiHostName;
             });
-            builder.Services.AddScoped<IThresholdNotificationService, ThresholdNotificationService>();
 
+            builder.Services.AddScoped<IActionableMessageTokenValidator, ActionableMessageTokenValidator>();
+            builder.Services.AddScoped<IThresholdNotificationService, ThresholdNotificationService>();
+            builder.Services.AddScoped<IDatabaseMigrationsRepository, DatabaseMigrationsRepository>();
+            builder.Services.AddScoped<IDatabaseSyncJobsRepository, DatabaseSyncJobsRepository>();
             var app = builder.Build();
 
             // Configure the HTTP request pipeline.
@@ -178,12 +248,12 @@ namespace WebApi
                         var url = $"/swagger/{description.GroupName}/swagger.json";
                         options.SwaggerEndpoint(url, description.GroupName.ToUpperInvariant());
                         options.OAuthAppName("Swagger Client");
-                        options.OAuthClientId(clientId);
+                        options.OAuthClientId(azureAdClientId);
                         options.OAuthUseBasicAuthenticationWithAccessCodeGrant();
                         options.OAuthAdditionalQueryStringParams(new Dictionary<string, string> {
-                                { "scope", $"https://{clientId}/.default" },
+                                { "scope", $"https://{azureAdClientId}/.default" },
                                 { "nonce", Guid.NewGuid().ToString() },
-                                { "resource", clientId }
+                                { "resource", azureAdClientId }
                             });
                     }
                 });
@@ -203,6 +273,7 @@ namespace WebApi
                 .AllowAnyMethod()
                 .AllowAnyHeader()
                 .AllowCredentials()
+                .WithExposedHeaders("X-Total-Pages", "X-Current-Page")
                 .Build()
             );
 
@@ -212,6 +283,34 @@ namespace WebApi
             app.MapControllers();
 
             app.Run();
+        }
+
+        private static async Task<ICollection<SecurityKey>> GetSigningKeysFromUrlAsync(string url)
+        {
+            var openIdConfigManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                url,
+                new OpenIdConnectConfigurationRetriever(),
+                new HttpDocumentRetriever());
+
+            var config = await openIdConfigManager.GetConfigurationAsync();
+
+            return config.SigningKeys;
+        }
+
+        private static bool GetBoolSetting(IConfiguration configuration, string settingName, bool defaultValue)
+        {
+            var checkParse = bool.TryParse(configuration[settingName], out bool value);
+            if (checkParse)
+                return value;
+            return defaultValue;
+        }
+
+        private static int GetIntSetting(IConfiguration configuration, string settingName, int defaultValue)
+        {
+            var checkParse = int.TryParse(configuration[settingName], out int value);
+            if (checkParse)
+                return value;
+            return defaultValue;
         }
     }
 }

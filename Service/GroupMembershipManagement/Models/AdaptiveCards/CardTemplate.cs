@@ -8,6 +8,8 @@ namespace Models.AdaptiveCards
         ThresholdNotification = 0,
         ThresholdNotificationResolved = 1,
         ThresholdNotificationUnauthorized = 2,
-        ThresholdNotificationNotFound = 3
+        ThresholdNotificationNotFound = 3,
+        ThresholdNotificationDisabled = 4,
+        ThresholdNotificationExpired = 5
     }
 }

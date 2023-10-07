@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 
 using Hosts.MembershipAggregator;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Models;
@@ -16,6 +18,7 @@ using Services.Contracts;
 using Services.Entities;
 using System;
 using System.Collections.Generic;
+using System.Data.SqlTypes;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -38,6 +41,7 @@ namespace Services.Tests
         private DeltaCalculatorResponse _deltaCalculatorResponse;
         private (string FilePath, string Content) _downloaderResponse;
         private MembershipSubOrchestratorRequest _membershipSubOrchestratorRequest;
+        private TelemetryClient _telemetryClient;
 
         private Mock<IDryRunValue> _dryRun;
         private Mock<IGMMResources> _gmmResources;
@@ -45,7 +49,7 @@ namespace Services.Tests
         private Mock<IThresholdConfig> _thresholdConfig;
         private Mock<IThresholdNotificationConfig> _thresholdNotificationConfig;
         private Mock<ILoggingRepository> _loggingRepository;
-        private Mock<ISyncJobRepository> _syncJobRepository;
+        private Mock<IDatabaseSyncJobsRepository> _syncJobRepository;
         private Mock<IEmailSenderRecipient> _emailSenderRecipient;
         private Mock<IDurableOrchestrationContext> _durableContext;
         private Mock<IBlobStorageRepository> _blobStorageRepository;
@@ -58,7 +62,7 @@ namespace Services.Tests
             _thresholdConfig = new Mock<IThresholdConfig>();
             _thresholdNotificationConfig = new Mock<IThresholdNotificationConfig>();
             _loggingRepository = new Mock<ILoggingRepository>();
-            _syncJobRepository = new Mock<ISyncJobRepository>();
+            _syncJobRepository = new Mock<IDatabaseSyncJobsRepository>();
             _durableContext = new Mock<IDurableOrchestrationContext>();
             _blobStorageRepository = new Mock<IBlobStorageRepository>();
             _emailSenderRecipient = new Mock<IEmailSenderRecipient>();
@@ -67,6 +71,7 @@ namespace Services.Tests
             _localizationRepository = new Mock<ILocalizationRepository>();
             _notificationRepository = new Mock<INotificationRepository>();
             _dryRun = new Mock<IDryRunValue>();
+            _telemetryClient = new TelemetryClient(new TelemetryConfiguration());
 
             _deltaCalculatorService = new DeltaCalculatorService
                                             (
@@ -79,7 +84,8 @@ namespace Services.Tests
                                                 _thresholdNotificationConfig.Object,
                                                 _gmmResources.Object,
                                                 _localizationRepository.Object,
-                                                _notificationRepository.Object
+                                                _notificationRepository.Object,
+                                                _telemetryClient
                                             );
 
 
@@ -93,8 +99,7 @@ namespace Services.Tests
 
             _syncJob = new SyncJob
             {
-                PartitionKey = "00-00-0000",
-                RowKey = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid(),
                 TargetOfficeGroupId = Guid.NewGuid(),
                 ThresholdPercentageForAdditions = 80,
                 ThresholdPercentageForRemovals = 20,
@@ -138,8 +143,7 @@ namespace Services.Tests
 
                                         var content = new GroupMembership
                                         {
-                                            SyncJobPartitionKey = _syncJob?.PartitionKey,
-                                            SyncJobRowKey = _syncJob?.RowKey,
+                                            SyncJobId = _syncJob?.Id ?? Guid.Empty,
                                             MembershipObtainerDryRunEnabled = false,
                                             RunId = _syncJob?.RunId.Value ?? Guid.Empty,
                                             Exclusionary = false,
@@ -168,8 +172,7 @@ namespace Services.Tests
                             var userCount = _membersPerFile[path];
                             var content = new GroupMembership
                             {
-                                SyncJobPartitionKey = _syncJob?.PartitionKey,
-                                SyncJobRowKey = _syncJob?.RowKey,
+                                SyncJobId = _syncJob?.Id ?? Guid.Empty,
                                 MembershipObtainerDryRunEnabled = false,
                                 RunId = _syncJob?.RunId.Value ?? Guid.Empty,
                                 Exclusionary = false,
@@ -199,7 +202,7 @@ namespace Services.Tests
                 { new AzureADUser { ObjectId = Guid.NewGuid(), Mail = "mail_3@mail.com" } }
             };
 
-            _syncJobRepository.Setup(x => x.GetSyncJobAsync(It.IsAny<string>(), It.IsAny<string>()))
+            _syncJobRepository.Setup(x => x.GetSyncJobAsync(It.IsAny<Guid>()))
                               .ReturnsAsync(() => _syncJob);
 
             _graphAPIService.Setup(x => x.GroupExistsAsync(It.IsAny<Guid>(), It.IsAny<Guid>()))
@@ -253,9 +256,9 @@ namespace Services.Tests
         [TestMethod]
         public async Task ProcessInitialJobSyncAsync()
         {
-            _syncJob.LastRunTime = DateTime.FromFileTimeUtc(0);
+            _syncJob.LastRunTime = SqlDateTime.MinValue.Value;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNotNull(response.FilePath);
@@ -264,30 +267,33 @@ namespace Services.Tests
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
             _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Uploaded membership file")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
-            _syncJobRepository.Verify(x => x.UpdateSyncJobStatusAsync(It.IsAny<IEnumerable<SyncJob>>(), It.IsAny<SyncStatus>()), Times.Never());
+            _syncJobRepository.Verify(x => x.UpdateSyncJobsAsync(It.IsAny<IEnumerable<SyncJob>>(), It.IsAny<SyncStatus>()), Times.Never());
         }
 
         [TestMethod]
         public async Task HitAdditionsThresholdTestAsync()
         {
-            var currentThresholdViolations = 1;
+            var currentThresholdViolations = 0;
             _thresholdConfig.Setup(x => x.NumberOfThresholdViolationsToDisableJob).Returns(5);
+            _thresholdConfig.Setup(x => x.NumberOfThresholdViolationsToNotify).Returns(2);
+            _graphAPIService.Setup(x => x.IsEmailRecipientOwnerOfGroupAsync(It.IsAny<string>(), It.IsAny<Guid>())).ReturnsAsync(true);
+
             _numberOfUsersForDestinationPart = 5;
             _syncJob.ThresholdViolations = currentThresholdViolations;
 
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
-            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
+            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership increase in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _syncJobRepository.Verify(x => x.UpdateSyncJobsAsync(
-                                                                    It.Is<IEnumerable<SyncJob>>(y => y.All(z => z.ThresholdViolations > currentThresholdViolations)),
-                                                                    It.Is<SyncStatus>(x => x == SyncStatus.Idle)
+                                                                    It.IsAny<IEnumerable<SyncJob>>(),
+                                                                    It.Is<SyncStatus?>(x => x == SyncStatus.Idle)
                                                                 )
                                                                     , Times.Once());
 
@@ -299,8 +305,7 @@ namespace Services.Tests
                                             It.IsAny<string>(),
                                             It.IsAny<string>(),
                                             It.IsAny<string[]>()
-                                        )
-                                            , Times.Never());
+                                        ), Times.Never());
         }
 
         [TestMethod]
@@ -312,7 +317,20 @@ namespace Services.Tests
             _syncJob.ThresholdViolations = currentThresholdViolations;
             _syncJob.IgnoreThresholdOnce = true;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
+            var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
+
+            Assert.AreEqual(MembershipDeltaStatus.Ok, response.MembershipDeltaStatus);
+            _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Going to sync the job")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
+        }
+
+        [TestMethod]
+        public async Task AllowEmptyDestinationTestAsync()
+        {
+            _numberOfUsersForDestinationPart = 0;
+            _syncJob.AllowEmptyDestination = true;
+
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.AreEqual(MembershipDeltaStatus.Ok, response.MembershipDeltaStatus);
@@ -329,14 +347,14 @@ namespace Services.Tests
             _numberOfUsersForSourcePart = 5;
             _syncJob.ThresholdViolations = 1;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
-            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
+            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership decrease in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _syncJobRepository.Verify(x => x.UpdateSyncJobsAsync(
                                                                     It.IsAny<IEnumerable<SyncJob>>(),
@@ -364,14 +382,14 @@ namespace Services.Tests
 
             _syncJob.ThresholdViolations = 4;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
-            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
+            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership decrease in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership increase in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Threshold exceeded")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
@@ -403,14 +421,14 @@ namespace Services.Tests
             _syncJob.ThresholdViolations = 4;
             _numberOfUsersForDestinationPart = 0;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
-            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
+            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership increase in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Threshold exceeded")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
 
@@ -439,16 +457,16 @@ namespace Services.Tests
             _thresholdConfig.Setup(x => x.NumberOfThresholdViolationsToNotify).Returns(5);
 
             _syncJob.ThresholdViolations = 4;
-            _numberOfUsersForSourcePart = 0;
+            _numberOfUsersForSourcePart = 1;
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
-            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
+            _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Membership decrease in")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Threshold exceeded")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
 
@@ -473,7 +491,7 @@ namespace Services.Tests
         [TestMethod]
         public async Task DryRunTestAsync()
         {
-            _syncJob.LastRunTime = DateTime.FromFileTimeUtc(0);
+            _syncJob.LastRunTime = SqlDateTime.MinValue.Value;
 
             _dryRun.Setup(x => x.DryRunEnabled).Returns(true);
             _deltaCalculatorService = new DeltaCalculatorService
@@ -487,10 +505,11 @@ namespace Services.Tests
                                     _thresholdNotificationConfig.Object,
                                     _gmmResources.Object,
                                     _localizationRepository.Object,
-                                    _notificationRepository.Object
+                                    _notificationRepository.Object,
+                                    _telemetryClient
                                 );
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
@@ -521,10 +540,11 @@ namespace Services.Tests
                                     _thresholdNotificationConfig.Object,
                                     _gmmResources.Object,
                                     _localizationRepository.Object,
-                                    _notificationRepository.Object
+                                    _notificationRepository.Object,
+                                    _telemetryClient
                                 );
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
@@ -532,7 +552,7 @@ namespace Services.Tests
 
             _blobStorageRepository.Verify(x => x.DownloadFileAsync(It.IsAny<string>()), Times.Exactly(3));
             _blobStorageRepository.Verify(x => x.UploadFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()), Times.Never());
-            _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Sync job : Partition key")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
+            _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Sync job : Id")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
         }
 
         [TestMethod]
@@ -550,10 +570,11 @@ namespace Services.Tests
                                     _thresholdNotificationConfig.Object,
                                     _gmmResources.Object,
                                     _localizationRepository.Object,
-                                    _notificationRepository.Object
+                                    _notificationRepository.Object,
+                                    _telemetryClient
                                 );
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.IsNull(response.FilePath);
@@ -575,10 +596,12 @@ namespace Services.Tests
             _syncJob.ThresholdPercentageForRemovals = -1;
             _numberOfUsersForSourcePart = 50000;
 
-            _membersPerFile.Add(GenerateFileName(_syncJob, "SourceMembership"), 100000);
-            _membersPerFile.Add(GenerateFileName(_syncJob, "DestinationMembership"), 0);
+            var contextMock = new Mock<IDurableOrchestrationContext>();
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            _membersPerFile.Add(GenerateFileName(_syncJob, "SourceMembership", contextMock.Object), 100000);
+            _membersPerFile.Add(GenerateFileName(_syncJob, "DestinationMembership", contextMock.Object), 0);
+
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             _blobStorageRepository.Verify(x => x.UploadFileAsync(It.Is<string>(x => x.Contains("SourceMembership")),
@@ -597,7 +620,7 @@ namespace Services.Tests
                                                                  It.IsAny<Dictionary<string, string>>()), Times.Once());
 
             _loggingRepository.Verify(x => x.LogMessageAsync(It.Is<LogMessage>(m => m.Message.StartsWith("Uploaded membership file")), VerbosityLevel.INFO, It.IsAny<string>(), It.IsAny<string>()), Times.Once());
-            _syncJobRepository.Verify(x => x.UpdateSyncJobStatusAsync(It.IsAny<IEnumerable<SyncJob>>(), It.IsAny<SyncStatus>()), Times.Never());
+            _syncJobRepository.Verify(x => x.UpdateSyncJobsAsync(It.IsAny<IEnumerable<SyncJob>>(), It.IsAny<SyncStatus?>()), Times.Never());
 
             Assert.IsNotNull(response.FilePath);
             Assert.AreEqual(MembershipDeltaStatus.Ok, response.MembershipDeltaStatus);
@@ -619,8 +642,7 @@ namespace Services.Tests
 
                                         var content = new GroupMembership
                                         {
-                                            SyncJobPartitionKey = _syncJob?.PartitionKey,
-                                            SyncJobRowKey = _syncJob?.RowKey,
+                                            SyncJobId = _syncJob?.Id ?? Guid.Empty,
                                             MembershipObtainerDryRunEnabled = false,
                                             RunId = _syncJob?.RunId.Value ?? Guid.Empty,
                                             Exclusionary = true,
@@ -643,7 +665,7 @@ namespace Services.Tests
                                     })
                                     .ReturnsAsync(() => _blobResult);
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
             Assert.AreEqual(0, response.ProjectedMemberCount);
         }
@@ -665,8 +687,7 @@ namespace Services.Tests
 
                                         var content = new GroupMembership
                                         {
-                                            SyncJobPartitionKey = _syncJob?.PartitionKey,
-                                            SyncJobRowKey = _syncJob?.RowKey,
+                                            SyncJobId = _syncJob?.Id ?? Guid.Empty,
                                             MembershipObtainerDryRunEnabled = false,
                                             RunId = _syncJob?.RunId.Value ?? Guid.Empty,
                                             Exclusionary = false,
@@ -698,8 +719,7 @@ namespace Services.Tests
 
                                        var content = new GroupMembership
                                        {
-                                           SyncJobPartitionKey = _syncJob?.PartitionKey,
-                                           SyncJobRowKey = _syncJob?.RowKey,
+                                           SyncJobId = _syncJob?.Id ?? Guid.Empty,
                                            MembershipObtainerDryRunEnabled = false,
                                            RunId = _syncJob?.RunId.Value ?? Guid.Empty,
                                            Exclusionary = true,
@@ -722,19 +742,19 @@ namespace Services.Tests
                                    })
                                    .ReturnsAsync(() => _blobResult);
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
             Assert.AreEqual(50000, response.ProjectedMemberCount);
         }
 
         [TestMethod]
-        public async Task SendThresholdNotificationIfEnabled()
+        public async Task SendThresholdNotificationIfEnabledAsync()
         {
             _syncJob.ThresholdViolations = 2;
             _thresholdNotificationConfig.Setup(x => x.IsThresholdNotificationEnabled).Returns(true);
             _thresholdConfig.Setup(x => x.NumberOfThresholdViolationsFollowUps).Returns(3);
 
-            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object);
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
             var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
 
             Assert.AreEqual(MembershipDeltaStatus.ThresholdExceeded, response.MembershipDeltaStatus);
@@ -742,6 +762,42 @@ namespace Services.Tests
             _notificationRepository.Verify(x => x.SaveNotificationAsync(It.IsAny<Models.ThresholdNotifications.ThresholdNotification>()), Times.Once());
             _notificationRepository.Verify(x => x.SaveNotificationAsync(
                 It.Is<Models.ThresholdNotifications.ThresholdNotification>(n => n.Status.Equals(ThresholdNotificationStatus.Queued))));
+        }
+
+        [TestMethod]
+        public async Task TestAllowEmptyDestinationIsFalseAsync()
+        {
+            _syncJob.AllowEmptyDestination = false;
+            _numberOfUsersForSourcePart = 0;
+
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
+            var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
+
+            Assert.IsNull(response.FilePath);
+            Assert.AreEqual(MembershipDeltaStatus.Error, response.MembershipDeltaStatus);
+            _graphAPIService.Verify(x => x.SendEmailAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string[]>(),
+                    It.IsAny<Guid>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string[]>()
+                )
+                    , Times.Once());
+        }
+
+        [TestMethod]
+        public async Task TestAllowEmptyDestinationIsTrueInitialSyncAsync()
+        {
+            _syncJob.AllowEmptyDestination = true;
+            _numberOfUsersForSourcePart = 0;
+            _numberOfUsersForDestinationPart = 0;
+
+            var orchestratorFunction = new MembershipSubOrchestratorFunction(_thresholdConfig.Object, _graphAPIService.Object);
+            var response = await orchestratorFunction.RunMembershipSubOrchestratorFunctionAsync(_durableContext.Object);
+
+            Assert.AreEqual(MembershipDeltaStatus.Ok, response.MembershipDeltaStatus);
         }
 
         private async Task<(string FilePath, string Content)> CallFileDownloaderFunctionAsync(FileDownloaderRequest request)
@@ -774,9 +830,9 @@ namespace Services.Tests
             return await function.CalculateDeltaAsync(request);
         }
 
-        private string GenerateFileName(SyncJob syncJob, string suffix)
+        private string GenerateFileName(SyncJob syncJob, string suffix, IDurableOrchestrationContext context)
         {
-            var timeStamp = syncJob.Timestamp.GetValueOrDefault().ToString("MMddyyyy-HHmmss");
+            var timeStamp = context.CurrentUtcDateTime.ToString("MMddyyyy-HHmm");
             return $"/{syncJob.TargetOfficeGroupId}/{timeStamp}_{syncJob.RunId}_{suffix}.json";
         }
     }

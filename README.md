@@ -53,9 +53,8 @@ This section aims to provide the background information needed to understand the
 -   Azure DevOps - [Try Azure DevOps Services](https://azure.microsoft.com/en-us/pricing/details/devops/azure-devops-services/)
 
     Note: to follow these steps you will need to sign in to [Azure Portal](https://portal.azure.com/) and [Azure DevOps Portal](https://dev.azure.com/.) with an account that has permissions to create new Azure resources.
--   Powershell v5.x [Download and install Windows PowerShell 5.1](https://docs.microsoft.com/en-us/skypeforbusiness/set-up-your-computer-for-windows-powershell/download-and-install-windows-powershell-5-1)
 
--   Powershell Core v7.x [Download and install Windows PowerShell 7.2](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows)
+-   Powershell Core v7.x [Download and install Windows PowerShell 7.x](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows)
 
 - [Visual Studio](https://visualstudio.microsoft.com/downloads/) or [Visual Studio Code](https://visualstudio.microsoft.com/downloads/)
 - [.NET SDK Version 6](https://dotnet.microsoft.com/en-us/download/dotnet/6.0)
@@ -179,7 +178,7 @@ See [Resource Groups](##Resource-groups-overview) and [Prereqs Keyvault](##Prere
 
 The following script is going to create the Azure resource groups and the prereqs keyvault required to set up GMM. We create these resource groups and keyvault in order for the ARM templates to be able to create additional resources and deploy the code.
 
-From your `PowerShell Core 7.2.x` command prompt navigate to the Scripts folder of your `Public` repo and type these commands:
+From your `PowerShell Core 7.x` command prompt navigate to the Scripts folder of your `Public` repo and type these commands:
 
     1. . ./Set-Environment.ps1
     2. Set-Environment  -solutionAbbreviation "<solutionAbbreviation>" `
@@ -189,7 +188,7 @@ From your `PowerShell Core 7.2.x` command prompt navigate to the Scripts folder 
                         -overwrite $true
 
 Where:
-* `<objectId>` - the Azure Object Id of the user, group or service principal to which access to the prereqs keyvault is going to be granted. This object Id must be located in the same Azure tenant where the keyvault is going to be created.
+* `<objectId>` - the Azure Object Id of the user, group or service principal to which access to the prereqs keyvault is going to be granted. To find your Object Id go to `Azure Portal -> AAD -> Search Tenant Search Bar`, look up your Microsoft email, and click on your profile. Your Object Id should be under the `Identity` section.
 * `<resourceGroupLocation>` - the Azure location where the resources are going to be created. Please refer to [this](https://docs.microsoft.com/en-us/azure/azure-resource-manager/templates/resource-location?tabs=azure-powershell) documentation to know the available resource locations.
 
 <b>Note:</b> If you get an error stating "script is not digitally signed" when running any of the provided PowerShell scripts, try running this cmdlet and rerunning the script:
@@ -206,7 +205,7 @@ The following PowerShell script will create a new application, `<solutionAbbrevi
 
 Note that this script will create an new application and authentication will be done using a client id and client secret pair. If you prefer to use a certificate skip to the next section.
 
-From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of your `Public` repo and run these commands:
+From your `PowerShell 7.x` command prompt navigate to the `Scripts` folder of your `Public` repo and run these commands:
 
     1. . ./Set-GraphCredentialsAzureADApplication.ps1
     2. Set-GraphCredentialsAzureADApplication	-SubscriptionName "<SubscriptionName>" `
@@ -217,6 +216,11 @@ From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of yo
                                                 -Clean $true `
                                                 -Verbose
 Follow the instructions on the screen.
+
+Note:   
+* AppTenantId <app-tenant-id> - If the application is going to be installed in a different tenant, set that tenant id here.  
+* KeyVaultTenantId <keyvault-tenant-id> - This is the tenant where your GMM resources are located, i.e. keyvaults, storage account.
+* If you only have one tenant, these will be set to the same tenant id.
 
 ### Creating the certificate
 If you don't need to use a certificate for authentication you can skip this step.
@@ -235,7 +239,7 @@ The script will create these settings in your prereqs keyvault.
 -   graphAppClientSecret
 -   graphAppCertificateName
 
-From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of your `Public` repo and run these commands:
+From your `PowerShell 7.x` command prompt navigate to the `Scripts` folder of your `Public` repo and run these commands:
 
     1. . ./Set-GraphCredentialsAzureADApplication.ps1
     2. Set-GraphCredentialsAzureADApplication	-SubscriptionName "<SubscriptionName>" `
@@ -251,6 +255,8 @@ Follow the instructions on the screen.
 
 
 ### Upload the certificate to your `<solutionAbbreviation>`-Graph-`<environmentAbbreviation>` application.
+
+If you don't need to use a certificate for authentication you can skip this step.
 
 We need to upload the certificate to the `<solutionAbbreviation>`-Graph-`<environmentAbbreviation>` application, in order to do that we need to export it from the prerqs keyvault.
 
@@ -298,46 +304,53 @@ See [GMM Environments](##GMM-environments) and [ARM templates and parameter file
 1. In your `Private` repo, locate and open file [vsts-cicd.yml](https://github.com/microsoftgraph/group-membership-management-tenant/blob/main/vsts-cicd.yml)
 2. Locate the `yaml/deploy-pipeline.yml` template of the `env` environment. It should look like this:
 
-        - template: yaml/deploy-pipeline.yml
-        parameters:
-            solutionAbbreviation: '$(SolutionAbbreviation)'
-            environmentAbbreviation: '<env>'
-            tenantId: $(tenantId)
-            subscriptionId: $(subscriptionId_nonprod)
-            keyVaultReaders: $(keyVaultReaders_nonprod)
-            location: $(location)
-            serviceConnection: '$(SolutionAbbreviation)-serviceconnection-<env>'
-            dependsOn:
-            - Build_Common
-            - Build_CopyParameters
-            stageName: 'NonProd_<env>'
-            functionApps:
-            - function:
-            name: 'GraphUpdater'
-            - function:
-            name: 'MembershipAggregator'
-            dependsOn:
-            - 'GraphUpdater'
-            - function:
-            name: 'SecurityGroup'
-            dependsOn:
-            - 'MembershipAggregator'
-            - function:
-            name: 'AzureTableBackup'
-            - function:
-            name: 'JobScheduler'
-            - function:
-            name: 'Notifier'
-            - function:
-            name: 'JobTrigger'
-            dependsOn:
-            - 'SecurityGroup'
-            condition: |
-            and(
-                succeeded('Build_Common'),
-                eq(variables['Build.SourceBranch'], 'refs/heads/develop'),
-                in(variables['Build.Reason'], 'IndividualCI', 'Manual')
-            )
+    - template: yaml/deploy-pipeline.yml
+    parameters:
+        solutionAbbreviation: '$(SolutionAbbreviation)'
+        environmentAbbreviation: '<env>'
+        tenantId: $(tenantId)
+        subscriptionName: $(subscriptionName_nonprod)
+        subscriptionId: $(subscriptionId_nonprod)
+        keyVaultReaders: $(keyVaultReaders_nonprod)
+        location: $(location)
+        serviceConnection: '$(SolutionAbbreviation)-serviceconnection-<env>'
+        dependsOn:
+        - Build_Common
+        - Build_CopyParameters
+        stageName: 'NonProd_<env>'
+        functionApps:
+        - function:
+        name: 'NonProdService'
+        - function:
+        name: 'GraphUpdater'
+        - function:
+        name: 'MembershipAggregator'
+        dependsOn:
+        - 'GraphUpdater'
+        - function:
+        name: 'GroupMembershipObtainer'
+        dependsOn:
+        - 'MembershipAggregator'
+        - function:
+        name: 'AzureMaintenance'
+        - function:
+        name: 'TeamsChannel'
+        dependsOn:
+        - 'MembershipAggregator'
+        - function:
+        name: 'JobTrigger'
+        dependsOn:
+        - 'MembershipAggregator'
+        - function:
+        name: 'Notifier'
+        deployJobScheduler: true
+        condition: |
+        and(
+            succeeded('Build_Common'),
+            succeeded('Build_CopyParameters'),
+            eq(variables['Build.SourceBranch'], 'refs/heads/develop'),
+            in(variables['Build.Reason'], 'IndividualCI', 'Manual')
+        )
 
 3. Copy and paste the template located in step two, then replace the values for these settings accordingly using the name of your new environment:
     - environmentAbbreviation
@@ -345,7 +358,53 @@ See [GMM Environments](##GMM-environments) and [ARM templates and parameter file
     - stageName
 
     Save your changes.
-4. Create parameter files based off the provided `parameters.env.json` by using the [Add-ParamFiles.ps1](/scripts/Add-ParamFiles.ps1) script:
+
+4. In your `Private` repo, locate and open file [vsts-cicd.yml](https://github.com/microsoftgraph/group-membership-management-tenant/blob/main/vsts-cicd.yml)
+
+5. Locate the `yaml/copy-deploy-webapp.yml` template of the `env` environment. It should look like this:
+    - template: yaml/copy-deploy-webapp.yml
+    parameters:
+        alias: ''
+        solutionAbbreviation: '$(SolutionAbbreviation)'
+        environmentAbbreviation: '<env>'
+        tenantId: $(tenantId)
+        subscriptionId: $(subscriptionId_prod)
+        keyVaultReaders: $(keyVaultReaders_prod)
+        location: $(location)
+        serviceConnection: '$(SolutionAbbreviation)-serviceconnection-<env>'
+        buildRelease: ${{variables.buildRelease}}
+        stageName: 'Prod_webapp_<env>'
+        condition: |
+        and(
+            succeeded('Build_WebApp'),
+            in(variables['Build.SourceBranch'], 'refs/heads/main'),
+            in(variables['Build.Reason'], 'IndividualCI', 'Manual')
+        )
+
+6. Edit the following fields of the duplicated template:
+    * There are three parameters that you must be set to your `<EnvironmentAbbreviation>`:
+
+        - environmentAbbreviation
+        - serviceConnection
+        - stageName
+
+7. Save your changes.
+
+8. In your `Private` repo, locate and open file [vsts-cicd.yml](https://github.com/microsoftgraph/group-membership-management-tenant/blob/main/vsts-cicd.yml)
+
+9. Locate the `repositories` information at the top. It should look like this:
+    resources:
+    repositories:
+    - repository: group-membership-management
+        type: git
+        name: external-gmm/STW-Sol-GrpMM-public
+        ref: refs/tags/<tag>
+
+10. Change <tag> to the latest tag. the latest Git tag for a repository can be found on the main overview page on GitHub.Specifically, the latest tag is shown next to the total number of branches at the top of the page, above the list of project files and folders.
+
+11. Save your changes.
+
+12. Create parameter files based off the provided `parameters.env.json` by using the [Add-ParamFiles.ps1](/scripts/Add-ParamFiles.ps1) script:
     * From your PowerShell command prompt navigate to the Scripts folder of your `Public` repo and type these commands.
 
             1. . ./Add-ParamFiles.ps1
@@ -377,7 +436,7 @@ The following PowerShell scripts create a Service Principal and set up a Service
 
     This script will create a new service principal for your environment.
 
-    From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of your `Public` repo and type these commands.
+    From your `PowerShell 7.x` command prompt navigate to the `Scripts` folder of your `Public` repo and type these commands.
 
         1. . ./Set-ServicePrincipal.ps1
         2. Set-ServicePrincipal -SolutionAbbreviation "<SolutionAbbreviation>"  `
@@ -392,7 +451,7 @@ The following PowerShell scripts create a Service Principal and set up a Service
 
     This script will grant the service principal `Contributor` role over all resource groups for GMM. This script must be run by someone with the <b>Owner role on the subscription.</b>
 
-    From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of your `Public` repo and type these commands.
+    From your `PowerShell 7.x` command prompt navigate to the `Scripts` folder of your `Public` repo and type these commands.
 
         1. . ./Set-ServicePrincipalManagedIdentityRoles.ps1
         2. Set-ServicePrincipalManagedIdentityRoles -SolutionAbbreviation "<SolutionAbbreviation>"  `
@@ -403,7 +462,7 @@ The following PowerShell scripts create a Service Principal and set up a Service
 
     This script sets up the service connection for your environment. You must be an owner of the the service pricipal created in step 1 to run this script.
 
-    From your `PowerShell 5.x` command prompt navigate to the `Scripts` folder of your `Public` repo, run these commands, and follow the instructions on the screen:
+    From your `PowerShell 7.x` command prompt navigate to the `Scripts` folder of your `Public` repo, run these commands, and follow the instructions on the screen:
 
         1. . ./Set-ServiceConnection.ps1
         2. Set-ServiceConnection -SolutionAbbreviation "<SolutionAbbreviation>"  `
@@ -416,7 +475,47 @@ The following PowerShell scripts create a Service Principal and set up a Service
     Where:
     *  `<OrganizationName>` - This is the name of your organization used in Azure DevOps.
     *  `<ProjectName>` - This is the name of the project in Azure DevOps we just created in a previous step.
+4. Give service connection access to the keyvaults
 
+    Go to your <SolutionAbbreviation>-prereqs-<EnvironmentAbbreviation> keyvault > Click on 'Access policies' > Click on Create > Select Get, List, and Set secrets permissions and then add your <SolutionAbbreviation>-serviceconnection-<EnvironmentAbbreviation> as the principal.
+
+## Grant the service connection access to SQL Server Database
+
+Your service connecion needs MSI access to the SQL Server DB so it can deploy the DACPAC file.
+
+Once the SQL server and databases are created as part of the deployment we will need to run these SQL statements before we can deploy the DACPAC file and run scripts on the jobs database.
+
+SyncJobs DB
+- Server name follows this naming convention `<SolutionAbbreviation>-data-<EnvironmentAbbreviation>`.
+- Database name follows this naming convention `<SolutionAbbreviation>-data-<EnvironmentAbbreviation>-jobs`.
+
+1. Connect to your SQL Server Database using Sql Server Management Studio (SSMS) or Azure Data Studio.
+- Server name : `<SolutionAbbreviation>-data-<EnvironmentAbbreviation>.database.windows.net`
+- User name: Your account.
+- Authentication: Azure Active Directory - Universal with MFA
+- Database name: `<SolutionAbbreviation>-data-<EnvironmentAbbreviation>`
+
+2. Run these SQL commands
+
+SyncJobs DB
+
+- This script needs to run only once.
+- Make sure you are connected to SyncJobs database: `<SolutionAbbreviation>-data-<EnvironmentAbbreviation>-jobs`.
+
+```
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = N'<SolutionAbbreviation>-serviceconnection-<EnvironmentAbbreviation>')
+BEGIN
+    ALTER ROLE db_datareader ADD MEMBER [<SolutionAbbreviation>-serviceconnection-<EnvironmentAbbreviation>] -- gives permission to read to database
+    ALTER ROLE db_datawriter ADD MEMBER [<SolutionAbbreviation>-serviceconnection-<EnvironmentAbbreviation>] -- gives permission to write to database
+END
+```
+
+Verify it ran successufully by running:
+```
+SELECT * FROM sys.database_principals WHERE name = N'<SolutionAbbreviation>-serviceconnection-<EnvironmentAbbreviation>'
+```
+You should see one record for your service connection resource.
+    
 ## Set up email notifications
 
 Please follow the steps in this documentation, which will ensure that the requestor is notified regarding the synchronization job status:
@@ -504,6 +603,10 @@ In Azure DevOps, we need to create a pipeline that will create your resources an
         * *If you see an error `no hosted parallelism has been purchased or granted`, please fill out [this](https://aka.ms/azpipelines-parallelism-request) form to request a free parallelism grant*
         * *If you see an error `MissingSubscriptionRegistration`, go to Subscription -> Resource Providers and register the missing provider*
 
+    Note: For testing purposes, "`<SolutionAbbreviation>`-serviceconnection-`<EnvironmentAbbreviation>`" must be assigned the 'Owner' role in order to successfully run the pipeline. Please note that this is for testing only and is not recommended for production use. In a production environment or when operating as a company, it is advised to define a custom role that aligns with the principle of least privilege for enhanced security. This custom role should only provide the minimum permissions necessary for the pipeline to function correctly, thereby minimizing potential security risks 
+
+    14. if you want to set up AzureUserReader Durable Function, please follow the instruction here: [AzureUserReader](Service\GroupMembershipManagement\Hosts\AzureUserReader\Documentation\README.md). Otherwise, you can remove this function from vstss-cicd.yml file
+
 ## Post-Deployment tasks
 
 Once the pipeline has completed building and deploying GMM code and resources to your Azure resource groups, we need to make some final configuration changes.
@@ -512,9 +615,9 @@ Once the pipeline has completed building and deploying GMM code and resources to
 
 The following script:
 1. Grants all functions access to App Configuration.
-2. Grants SecurityGroup, MembershipAggregator, and GraphUpdater functions access to storage account.
+2. Grants GroupMembershipObtainer, MembershipAggregator, and GraphUpdater functions access to storage account.
 
-From your `PowerShell 7.2.x` command prompt navigate to the `Scripts/PostDeployment` folder of your `Public` repo, run these commands, and follow the instructions on the screen:
+From your `PowerShell 7.x` command prompt navigate to the `Scripts/PostDeployment` folder of your `Public` repo, run these commands, and follow the instructions on the screen:
 
         1. . ./Set-PostDeploymentRoles.ps1
         2. Set-PostDeploymentRoles  -SolutionAbbreviation "<solutionAbbreviation>" `
@@ -528,6 +631,30 @@ Where:
 * `<storageAccountName>` - can be found in the data key vault secrets under `jobsStorageAccountName`. It will have the form of: `jobs<environmentAbbreviation><randomId>`.
 * `<appConfigName>` - will have the form of "`<SolutionAbbreviation>`-appConfig-`<EnvironmentAbbreviation>`"
 * `<logAnalyticsWorkspaceResourceName>` - will be the name of your LogAnalytics resource (Also known as a Workspace) and will have the form of "`<SolutionAbbreviation>`-data-`<EnvironmentAbbreviation>`"
+
+### SQL Server - Jobs table access
+
+Azure Functions connect to SQL server via MSI (System Identity), once the database is created as part of the deployment we need to grant access to the functions to read and write to the database.
+
+For these functions:
+JobTrigger, GroupMembershipObtainer, AzureMaintenance, PlaceMembershipObtainer*, AzureUserReader, GraphUpdater, JobScheduler, MembershipAggregator, NonProdService, Notifier, GroupOwnershipObtainer, TeamsChannel
+
+Run this commands, in your SQL Server database where the jobs table was created:
+
+    --Production slot
+    CREATE USER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>] FROM EXTERNAL PROVIDER
+    ALTER ROLE db_datareader ADD MEMBER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>] -- gives permission to read to database
+    ALTER ROLE db_datawriter ADD MEMBER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>] -- gives permission to write to database
+
+    --Staging slot
+    CREATE USER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>/slots/staging] FROM EXTERNAL PROVIDER
+    ALTER ROLE db_datareader ADD MEMBER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>/slots/staging] -- gives permission to read to database
+    ALTER ROLE db_datawriter ADD MEMBER [<SolutionAbbreviation>-compute-<EnvironmentAbbreviation>-<function>/slots/staging] -- gives permission to write to database
+
+Repeat the steps above for each function.
+
+Note:
+PlaceMembershipObtainer is not being deployed by default, if you need to deploy it, you will need to grant access to the database as well.
 
 ### Create the jobs table:
 
@@ -584,7 +711,7 @@ To create a production environment:
             dependsOn:
             - 'GraphUpdater'
             - function:
-            name: 'SecurityGroup'
+            name: 'GroupMembershipObtainer'
             dependsOn:
             - 'MembershipAggregator'
             - function:
@@ -596,7 +723,7 @@ To create a production environment:
             - function:
             name: 'JobTrigger'
             dependsOn:
-            - 'SecurityGroup'
+            - 'GroupMembershipObtainer'
             condition: |
             and(
                 succeeded('Build_Common'),
@@ -659,30 +786,30 @@ A synchronization job must have the following properties populated:
 See [syncJobs properties](./Documentation/syncJobsProperties.md) for more information.
 
 
-A PowerShell script [New-GmmSecurityGroupSyncJob.ps1](/Service/GroupMembershipManagement/Hosts/SecurityGroup/Scripts/New-GmmSecurityGroupSyncJob.ps1) is provided to help you create the synchronization jobs.
+A PowerShell script [New-GmmGroupMembershipSyncJob.ps1](/Service/GroupMembershipManagement/Hosts/GroupMembershipObtainer/Scripts/New-GmmGroupMembershipSyncJob.ps1) is provided to help you create the synchronization jobs.
 
 The Query field requires a JSON object that must follow this format:
 
 ```
 [
     {
-        "type": "SecurityGroup",
+        "type": "GroupMembership",
         "source": "<guid-group-objet-id-1>"
     },
     {
-        "type": "SecurityGroup",
+        "type": "GroupMembership",
         "source": "<guid-group-objet-id-2>"
     },
     {
-        "type": "SecurityGroup",
+        "type": "GroupMembership",
         "source": "<guid-group-objet-id-n>"
     }
 ]
 ```
-The script can be found in \Service\GroupMembershipManagement\Hosts\SecurityGroup\Scripts folder.
+The script can be found in \Service\GroupMembershipManagement\Hosts\GroupMembershipObtainer\Scripts folder.
 
-    1. . ./New-GmmSecurityGroupSyncJob.ps1
-    2. New-GmmSecurityGroupSyncJob	-SubscriptionName "<SubscriptionName>" `
+    1. . ./New-GmmGroupMembershipSyncJob.ps1
+    2. New-GmmGroupMembershipSyncJob	-SubscriptionName "<SubscriptionName>" `
                             -SolutionAbbreviation "<SolutionAbbreviation>" `
 							-EnvironmentAbbreviation "<EnvironmentAbbreviation>" `
 							-Requestor "<RequestorEmailAddress>" `
@@ -701,11 +828,11 @@ The NonProdService function will create and populate test groups in the tenant f
 ### Dry Run Settings
 
 Dry run settings are present in GMM to provide users the ability to test new changes without affecting the group membership. This configuration is present in the application configuration table.
-If you would like to have the default setting to be false, then please update the settings in the app configuration to false for the GraphUpdater and SecurityGroup.
+If you would like to have the default setting to be false, then please update the settings in the app configuration to false for the GraphUpdater and GroupMembershipObtainer.
 
 There are 3 Dry Run flags in GMM. If any of these Dry run flags are set, the sync will be completed but destination membership will not be affected.
 1. IsDryRunEnabled: This is a property that is set on an individual sync. Setting this to true will run this sync in dry run.
-2. IsSecurityGroupDryRunEnabled: This is a property that is set in the app configuration table. Setting this to true will run all Security Group syncs in dry run.
+2. GroupMembershipObtainer:IsDryRunEnabled: This is a property that is set in the app configuration table. Setting this to true will run all Security Group syncs in dry run.
 3. IsMembershipAggregatorDryRunEnabled: This is a property that is set in the app configuration table. Setting this to true will run all syncs in dry run.
 
 # Setting AzureMaintenance function
@@ -738,16 +865,18 @@ The default configuration for the 'syncJobs' table is generated via an ARM templ
 
 The run frequency is set to every day at midnight, it is defined as a NCRONTAB expression in the application setting named 'backupTriggerSchedule' which can be updated on the Azure Portal, it's located under the Configuration blade for `<SolutionAbbreviation>`-compute-`<EnvironmentAbbreviation>`-AzureMaintenance Function App. Additionally,  it can be updated directly in the respective ARM template located under Service\GroupMembershipManagement\Hosts\AzureMaintenance\Infrastructure\compute\template.bicep
 
-# Setting OwnershipReader function
-[OwnershipReader function](Service\GroupMembershipManagement\Hosts\OwnershipReader\Documentation\OwnershipReader.md)
+# Setting GroupOwnershipObtainer function
+[GroupOwnershipObtainer function](Service\GroupMembershipManagement\Hosts\GroupOwnershipObtainer\Documentation\GroupOwnershipObtainer.md)
 
 # Setting GMM in a demo tenant
 
 In the event that you are setting up GMM in a demo tenant refer to [Setting GMM in a demo tenant](/Documentation/DemoTenant.md) for additional guidance.
 
-# Setting up GMM UI
+# Setting up WebAPI and GMM UI
 
-Please refer to [GMM UI](UI/web-app/README.md) for additional guidance.
+Please refer to [Create React App](UI/web-app/README.md) for additional guidance.  
+Please refer to [WebAPI](Service/GroupMembershipManagement/Hosts/WebApi/Documentation/WebApiSetup.md) for additional guidance.  
+Please refer to [GMM UI](UI/Documentation/UISetup.md) for additional guidance.
 
 # Steps to debug and troubleshoot a failing sync
 

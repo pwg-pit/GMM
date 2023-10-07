@@ -1,4 +1,25 @@
 # Breaking Changes
+## 8/1/2023
+SecurityGroup function has been renamed to GroupMembershipObtainer.
+SecurityGroup service bus topic has been renamed to GroupMembership.
+
+SyncJob must set the type to GroupMembership in their query.
+```
+[
+    {
+        "type": "GroupMembership",
+        "source": "<guid-group-objet-id-1>"
+    }
+]
+```
+
+Existing jobs will need to be updated to use the new type.
+To manually update the type, you can use the following T-SQL statement.
+```
+UPDATE SyncJobs SET Query = REPLACE(Query, 'SecurityGroup', 'GroupMembership') WHERE Query LIKE '%SecurityGroup%'
+```
+Once the renamed function is deployed, you can remove the old "SecurityGroup" function.
+
 
 ## 11/23/2022
 
@@ -198,3 +219,10 @@ GMM has been updated to send group membership through blobs instead of queues. S
 See section [Grant SecurityGroup, GraphUpdater function access to storage account](README.md#grant-securitygroup-graphupdater-function-access-to-storage-account) for more information.
 
 Once these changes are deployed successfully to your enviroment it will be safe to delete the 'membership' queue from your Azure Resources.
+
+## 7/26/2023
+### Create the jobs table in SQL database
+
+* Go to https://`<solutionAbbreviation>`-compute-`<environmentAbbreviation>`-webapi.azurewebsites.net/swagger/index.html
+* Hit the endpoint `admin/databaseMigration`. This will create the jobs table in `<solutionAbbreviation>`-data-`<environmentAbbreviation>`-jobs database
+* A successful deployment to your environment will copy the jobs from storage account to sql database

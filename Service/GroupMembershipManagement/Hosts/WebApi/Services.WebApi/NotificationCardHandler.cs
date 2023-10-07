@@ -44,6 +44,9 @@ namespace Services.WebApi
             var isGroupOwner = await _graphGroupRepository.IsEmailRecipientOwnerOfGroupAsync(request.UserUPN, notification.TargetOfficeGroupId);
             if (!isGroupOwner)
             {
+                // Check if user is in the list of GMM Admins
+
+
                 // Unauthorized
                 response.CardJson = await _thresholdNotificationService.CreateUnauthorizedNotificationCardAsync(notification);
             }
@@ -53,6 +56,11 @@ namespace Services.WebApi
                 {
                     // Resolved
                     response.CardJson = await _thresholdNotificationService.CreateResolvedNotificationCardAsync(notification);
+                }
+                else if (notification.Status == ThresholdNotificationStatus.Expired)
+                {
+                    // Expired
+                    response.CardJson = _thresholdNotificationService.CreateExpiredNotificationCardAsync(notification);
                 }
                 else
                 {

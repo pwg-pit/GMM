@@ -4,6 +4,8 @@
 using Models.CustomAttributes;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Data.SqlTypes;
 
 namespace Models
 {
@@ -19,7 +21,11 @@ namespace Models
             PartitionKey = partitionKey;
             RowKey = rowKey;
         }
+
+        public Guid Id { get; set; }
+        [NotMapped]
         public string PartitionKey { get; set; }
+        [NotMapped]
         public string RowKey { get; set; }
 
         public Guid? RunId { get; set; }
@@ -32,6 +38,7 @@ namespace Models
         /// </summary>
         public Guid TargetOfficeGroupId { get; set; }
         public string Destination { get; set; }
+        public bool AllowEmptyDestination { get; set; }
 
         [IgnoreLogging]
         public string Status { get; set; }
@@ -40,19 +47,19 @@ namespace Models
         /// Last Run Time (UTC)
         /// </summary>
         [IgnoreLogging]
-        public DateTime LastRunTime { get; set; } = DateTime.FromFileTimeUtc(0); //azure table storage rejects default(DateTime), so set them to this on construction.
+        public DateTime LastRunTime { get; set; } = SqlDateTime.MinValue.Value; //azure table storage rejects default(DateTime), so set them to this on construction.
 
         /// <summary>
         /// Last Successful Run Time (UTC)
         /// </summary>
         [IgnoreLogging]
-        public DateTime LastSuccessfulRunTime { get; set; } = DateTime.FromFileTimeUtc(0);
+        public DateTime LastSuccessfulRunTime { get; set; } = SqlDateTime.MinValue.Value;
 
         /// <summary>
         /// Last Successful Start Time (UTC)
         /// </summary>
         [IgnoreLogging]
-        public DateTime LastSuccessfulStartTime { get; set; } = DateTime.FromFileTimeUtc(0);
+        public DateTime LastSuccessfulStartTime { get; set; } = SqlDateTime.MinValue.Value;
 
         /// <summary>
         /// Period (hours)
@@ -66,7 +73,7 @@ namespace Models
         /// Start Date (UTC)
         /// </summary>
         [IgnoreLogging]
-        public DateTime StartDate { get; set; } = DateTime.FromFileTimeUtc(0);
+        public DateTime StartDate { get; set; } = SqlDateTime.MinValue.Value;
 
         /// <summary>
         /// Ignore threshold check if this is set to true
@@ -105,8 +112,8 @@ namespace Models
             }
             set
             {
-                if (DateTime.FromFileTimeUtc(0) > value)
-                    _dryRunTimeStamp = DateTime.FromFileTimeUtc(0);
+                if (SqlDateTime.MinValue.Value > value)
+                    _dryRunTimeStamp = SqlDateTime.MinValue.Value;
                 else
                     _dryRunTimeStamp = value;
             }
@@ -117,8 +124,9 @@ namespace Models
         /// </summary>
         [IgnoreLogging]
         public int ThresholdViolations { get; set; }
+        [NotMapped]
         public DateTimeOffset? Timestamp { get; set; }
-
+        [NotMapped]
         public string ETag { get; set; }
 
         public Dictionary<string, string> ToDictionary() =>

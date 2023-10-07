@@ -2,14 +2,27 @@
 // Licensed under the MIT license.
 
 import React from 'react';
-import { Page } from '../components/Page';
+
 import { JobsList } from '../components/JobsList/JobsList';
+import { Page } from '../components/Page';
+import { PageHeader } from '../components/PageHeader';
+import { WelcomeName } from '../components/WelcomeName';
+import { Banner } from '../components/Banner';
+import { Stack } from '@fluentui/react';
+import { PageSection } from '../components/PageSection';
 
 export const JobsPage: React.FunctionComponent = () => {
-
   return (
     <Page>
-      <JobsList/>
+      <PageHeader backButtonHidden>
+        <Stack horizontalAlign="space-between" horizontal style={{padding: '19px 0px 19px 36px'}}>
+          <WelcomeName />
+          {/* <Banner /> // Hidden until feature is enabled */}
+        </Stack>
+      </PageHeader>
+      <PageSection>
+        <JobsList />
+      </PageSection>
     </Page>
   );
 };

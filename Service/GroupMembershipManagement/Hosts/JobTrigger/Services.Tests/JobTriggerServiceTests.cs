@@ -4,16 +4,20 @@ using DIConcreteTypes;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Models;
 using Moq;
+using Newtonsoft.Json.Linq;
 using Repositories.Contracts;
 using Repositories.Contracts.InjectConfig;
 using Repositories.Mocks;
 using Repositories.ServiceBusTopics.Tests;
 using Services.Contracts;
 using System;
+using System.Data.SqlTypes;
 using System.Linq;
 using System.Threading.Tasks;
 using Tests.Repositories;
-using MockSyncJobRepository = Repositories.SyncJobs.Tests.MockSyncJobRepository;
+using MockDatabaseSyncJobRepository = Repositories.Mocks.MockDatabaseSyncJobRepository;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.Extensibility;
 
 namespace Services.Tests
 {
@@ -21,7 +25,7 @@ namespace Services.Tests
     public class JobTriggerServiceTests
     {
         private JobTriggerService _jobTriggerService = null;
-        private MockSyncJobRepository _syncJobRepository = null;
+        private MockDatabaseSyncJobRepository _syncJobRepository = null;
         private MockLoggingRepository _loggingRepository = null;
         private MockServiceBusTopicsRepository _serviceBusTopicsRepository = null;
         private MockGraphGroupRepository _graphGroupRepository;
@@ -29,8 +33,8 @@ namespace Services.Tests
         private GMMResources _gMMResources = null;
         private MockJobTriggerConfig _jobTriggerConfig = null;
 
-        private const string Organization = "Organization";
-        private const string SecurityGroup = "SecurityGroup";
+		private const string Organization = "Organization";
+        private const string GroupMembership = "GroupMembership";
         private const string EmailSubject = "EmailSubject";
         private const string SyncStartedEmailBody = "SyncStartedEmailBody";
         private const string SyncDisabledNoGroupEmailBody = "SyncDisabledNoGroupEmailBody";
@@ -43,7 +47,8 @@ namespace Services.Tests
                 LearnMoreAboutGMMUrl = "http://learn-more-about-gmm"
             };
 
-            _syncJobRepository = new MockSyncJobRepository();
+            _syncJobRepository = new MockDatabaseSyncJobRepository();
+
             _loggingRepository = new MockLoggingRepository();
             _serviceBusTopicsRepository = new MockServiceBusTopicsRepository();
             _graphGroupRepository = new MockGraphGroupRepository();
@@ -57,27 +62,97 @@ namespace Services.Tests
                                         new MockKeyVaultSecret<IJobTriggerService>(), _mailRepository,
                                         new MockEmail<IEmailSenderRecipient>(),
                                         _gMMResources,
-                                        _jobTriggerConfig);
+                                        _jobTriggerConfig,
+                                        new TelemetryClient(TelemetryConfiguration.CreateDefault()));
+        }
+
+        public Guid getDestinationObjectId(SyncJob job)
+        {
+            return new Guid((JArray.Parse(job.Destination)[0] as JObject)["value"]["objectId"].Value<string>());
+        }
+
+        [TestMethod]
+        public async Task TestValidGroupDestinationQuery()
+        {
+            SyncJob job = SampleDataHelper.CreateSampleSyncJobs(1, GroupMembership).First();
+            var objectId = Guid.NewGuid();
+            job.Destination = $"[{{\"type\":\"GroupMembership\",\"value\":{{\"objectId\":\"{objectId}\"}}}}]";
+
+            var parsedAndValidated = await _jobTriggerService.ParseAndValidateDestinationAsync(job);
+
+            Assert.AreEqual(true, parsedAndValidated.IsValid);
+            Assert.AreEqual(objectId, parsedAndValidated.DestinationObject.Value.ObjectId);
+        }
+
+        [TestMethod]
+        public async Task TestValidTeamsDestinationQuery()
+        {
+            SyncJob job = SampleDataHelper.CreateSampleSyncJobs(1, GroupMembership).First();
+            var objectId = Guid.NewGuid();
+            var channelId = "Channel_ID";
+            job.Destination = $"[{{\"type\":\"TeamsChannel\",\"value\":{{\"objectId\":\"{objectId}\",\"channelId\":\"{channelId}\"}}}}]";
+
+            var parsedAndValidated = await _jobTriggerService.ParseAndValidateDestinationAsync(job);
+
+            Assert.AreEqual(true, parsedAndValidated.IsValid);
+            Assert.AreEqual(objectId, parsedAndValidated.DestinationObject.Value.ObjectId);
+            Assert.AreEqual(channelId, (parsedAndValidated.DestinationObject.Value as TeamsChannelDestinationValue).ChannelId);
+        }
+
+        [TestMethod]
+        public async Task TestEmptyDestinationQuery()
+        {
+            SyncJob job = SampleDataHelper.CreateSampleSyncJobs(1, GroupMembership).First();
+            job.Destination = "";
+
+            var parsedAndValidated = await _jobTriggerService.ParseAndValidateDestinationAsync(job);
+
+            Assert.AreEqual(false, parsedAndValidated.IsValid);
+            Assert.AreEqual(null, parsedAndValidated.DestinationObject);
+        }
+
+        [TestMethod]
+        public async Task TestInvalidDestinationQueryDueToMissingType()
+        {
+            SyncJob job = SampleDataHelper.CreateSampleSyncJobs(1, GroupMembership).First();
+            job.Destination = $"[{{\"value\":{{\"objectId\":\"{Guid.NewGuid()}\"}}}}]";
+
+            var parsedAndValidated = await _jobTriggerService.ParseAndValidateDestinationAsync(job);
+
+            Assert.AreEqual(false, parsedAndValidated.IsValid);
+            Assert.AreEqual(null, parsedAndValidated.DestinationObject);
+        }
+
+        [TestMethod]
+        public async Task TestInvalidTeamsDestinationQuery()
+        {
+            SyncJob job = SampleDataHelper.CreateSampleSyncJobs(1, GroupMembership).First();
+            job.Destination = $"[{{\"type\":\"TeamsChannel\",\"value\":{{\"objectId\":\"{Guid.NewGuid()}\"}}}}]";
+
+            var parsedAndValidated = await _jobTriggerService.ParseAndValidateDestinationAsync(job);
+
+            Assert.AreEqual(false, parsedAndValidated.IsValid);
+            Assert.AreEqual(null, parsedAndValidated.DestinationObject);
         }
 
         [TestMethod]
         public async Task ValidateJobsAreAddedToCorrectSubscription()
         {
             var organizationJobCount = 5;
-            var securityGroupJobCount = 3;
+            var groupMembershipJobCount = 3;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(organizationJobCount, Organization));
-            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(securityGroupJobCount, SecurityGroup));
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(groupMembershipJobCount, GroupMembership));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
             foreach (var job in _syncJobRepository.Jobs)
             {
                 await _jobTriggerService.SendMessageAsync(job);
             }
             Assert.AreEqual(organizationJobCount, _serviceBusTopicsRepository.Subscriptions[Organization].Count);
-            Assert.AreEqual(securityGroupJobCount, _serviceBusTopicsRepository.Subscriptions[SecurityGroup].Count);
+            Assert.AreEqual(groupMembershipJobCount, _serviceBusTopicsRepository.Subscriptions[GroupMembership].Count);
         }
 
         [TestMethod]
@@ -89,7 +164,7 @@ namespace Services.Tests
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(enabledJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(disabledJobs, Organization));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
             foreach (var job in _syncJobRepository.Jobs.Take(enabledJobs))
             {
@@ -107,7 +182,7 @@ namespace Services.Tests
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(enabledJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(disabledJobs, Organization));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
 
             foreach (var job in _syncJobRepository.Jobs.Take(enabledJobs))
             {
@@ -125,13 +200,13 @@ namespace Services.Tests
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobs = response.jobs;
 
-            var jobsToProcessCount = _serviceBusTopicsRepository.Subscriptions.Sum(x => x.Value.Count);
+			var jobsToProcessCount = _serviceBusTopicsRepository.Subscriptions.Sum(x => x.Value.Count);
 
             Assert.AreEqual(validStartDateJobs, jobs.Count);
         }
@@ -145,13 +220,13 @@ namespace Services.Tests
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsWithValidPeriods, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsWithInvalidPeriods, Organization, lastRunTime: DateTime.UtcNow.AddMinutes(30)));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobs = response.jobs;
 
-            var jobsToProcessCount = _serviceBusTopicsRepository.Subscriptions.Sum(x => x.Value.Count);
+			var jobsToProcessCount = _serviceBusTopicsRepository.Subscriptions.Sum(x => x.Value.Count);
 
             Assert.AreEqual(jobsWithValidPeriods, jobs.Count);
         }
@@ -163,11 +238,11 @@ namespace Services.Tests
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobs, Organization));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
-
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
+      
             foreach (var job in _syncJobRepository.Jobs)
-            {
+            {                
                 var canWriteToGroup = await _jobTriggerService.GroupExistsAndGMMCanWriteToGroupAsync(job);
                 await _jobTriggerService.UpdateSyncJobStatusAsync(canWriteToGroup ? SyncStatus.InProgress : SyncStatus.NotOwnerOfDestinationGroup, job);
                 Assert.AreEqual(job.Status, SyncStatus.InProgress.ToString());
@@ -181,9 +256,9 @@ namespace Services.Tests
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobs, Organization));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
-
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
+           
             foreach (var job in _syncJobRepository.Jobs)
             {
                 job.Status = SyncStatus.InProgress.ToString();
@@ -199,7 +274,7 @@ namespace Services.Tests
             var jobs = 2;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobs, Organization));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
 
             foreach (var job in _syncJobRepository.Jobs)
             {
@@ -209,13 +284,14 @@ namespace Services.Tests
             }
         }
 
+
         [TestMethod]
         public async Task VerifyJobStatusIsUpdatedToInProgressDueToTenantAPIPermissions()
         {
             var jobs = 2;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobs, Organization));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
 
             _jobTriggerConfig.GMMHasGroupReadWriteAllPermissions = true;
 
@@ -234,11 +310,11 @@ namespace Services.Tests
             var MessageIdOne = "";
             var MessageIdTwo = "";
 
-            var securityGroupJobCount = 1;
-            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(securityGroupJobCount, SecurityGroup));
+            var groupMembershipJobCount = 1;
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(groupMembershipJobCount, GroupMembership));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
             await _jobTriggerService.SendMessageAsync(_syncJobRepository.Jobs[0]);
 
@@ -277,24 +353,25 @@ namespace Services.Tests
                 _mailRepository.Object,
                 new MockEmail<IEmailSenderRecipient>(),
                 _gMMResources,
-                _jobTriggerConfig);
+                _jobTriggerConfig,
+				new TelemetryClient(TelemetryConfiguration.CreateDefault()));
 
-            var validStartDateJobs = 5;
+			var validStartDateJobs = 5;
             var futureStartDateJobs = 3;
 
-            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization, lastRunTime: DateTime.FromFileTimeUtc(0)));
-            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5), lastRunTime: DateTime.FromFileTimeUtc(0)));
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization, lastRunTime: SqlDateTime.MinValue.Value));
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5), lastRunTime: SqlDateTime.MinValue.Value));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+            var jobs = response.jobs;
 
             foreach (var job in jobs)
             {
                 _jobTriggerService.RunId = job.RunId.Value;
-                var groupName = await _graphGroupRepository.GetGroupNameAsync(job.TargetOfficeGroupId);
+                var groupName = await _graphGroupRepository.GetGroupNameAsync(getDestinationObjectId(job));
                 await _jobTriggerService.SendEmailAsync(job, EmailSubject, SyncStartedEmailBody, new string[] { });
 
                 Assert.IsNotNull(_jobTriggerService.RunId);
@@ -321,23 +398,24 @@ namespace Services.Tests
                 _mailRepository.Object,
                 new MockEmail<IEmailSenderRecipient>(),
                 _gMMResources,
-                _jobTriggerConfig);
+                _jobTriggerConfig,
+				new TelemetryClient(TelemetryConfiguration.CreateDefault()));
 
-            var validStartDateJobs = 5;
+			var validStartDateJobs = 5;
             var futureStartDateJobs = 3;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobs = response.jobs;
 
-            foreach (var job in jobs)
+			foreach (var job in jobs)
             {
-                var groupName = await _graphGroupRepository.GetGroupNameAsync(job.TargetOfficeGroupId);
+                var groupName = await _graphGroupRepository.GetGroupNameAsync(getDestinationObjectId(job));
                 await _jobTriggerService.SendEmailAsync(job, EmailSubject, SyncStartedEmailBody, new string[] { });
             }
 
@@ -359,21 +437,22 @@ namespace Services.Tests
                 _mailRepository.Object,
                 new MockEmail<IEmailSenderRecipient>(),
                 _gMMResources,
-                _jobTriggerConfig);
+                _jobTriggerConfig,
+				new TelemetryClient(TelemetryConfiguration.CreateDefault()));
 
-            var validStartDateJobs = 5;
+			var validStartDateJobs = 5;
             var futureStartDateJobs = 3;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobs = response.jobs;
 
-            foreach (var job in jobs)
+			foreach (var job in jobs)
             {
                 await _jobTriggerService.SendEmailAsync(job, EmailSubject, SyncStartedEmailBody, new string[] { });
             }
@@ -396,21 +475,22 @@ namespace Services.Tests
                 _mailRepository.Object,
                 new MockEmail<IEmailSenderRecipient>(),
                 _gMMResources,
-                _jobTriggerConfig);
+                _jobTriggerConfig,
+				new TelemetryClient(TelemetryConfiguration.CreateDefault()));
 
-            var validStartDateJobs = 5;
+			var validStartDateJobs = 5;
             var futureStartDateJobs = 3;
 
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(validStartDateJobs, Organization));
             _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(futureStartDateJobs, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
 
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
-            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(getDestinationObjectId(x)));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(getDestinationObjectId(x)));
 
-            var bulkSegment = await _jobTriggerService.GetSyncJobsSegmentAsync("some-query", "continuation-token");
-            var jobs = bulkSegment.Values;
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobs = response.jobs;
 
-            foreach (var job in jobs)
+			foreach (var job in jobs)
             {
                 await _jobTriggerService.SendEmailAsync(job, EmailSubject, SyncStartedEmailBody, new string[] { });
             }
@@ -418,7 +498,58 @@ namespace Services.Tests
             Assert.AreEqual(validStartDateJobs, jobs.Count);
         }
 
-        private class MockEmail<T> : IEmailSenderRecipient
+        [TestMethod]
+        public async Task VerifyJobsCountExceedMinimalNumberHigherThanThreshold()
+        {
+            var jobsProceedNow = 5;
+            var jobsNotProceedNow = 3;
+
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsProceedNow, Organization));
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsNotProceedNow, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
+
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+            var jobTriggerThresholdExceeded = response.jobTriggerThresholdExceeded;
+            Assert.AreEqual(true, jobTriggerThresholdExceeded);
+        }
+
+        [TestMethod]
+        public async Task VerifyJobsCountExceedMinimalNumberLowerThanThreshold()
+        {
+            var jobsProceedNow = 5;
+            var jobsNotProceedNow = 20;
+
+			_syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsProceedNow, Organization));
+            _syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsNotProceedNow, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
+
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+            _syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+
+            var response = await _jobTriggerService.GetSyncJobsAsync();
+            var jobTriggerThresholdExceeded = response.jobTriggerThresholdExceeded;
+            Assert.AreEqual(false, jobTriggerThresholdExceeded);
+        }
+
+		[TestMethod]
+		public async Task VerifyJobsCountLowerThanMinimalHigherThanThreshold()
+		{
+			var jobsProceedNow = 3;
+			var jobsNotProceedNow = 3;
+
+			_syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsProceedNow, Organization));
+			_syncJobRepository.Jobs.AddRange(SampleDataHelper.CreateSampleSyncJobs(jobsNotProceedNow, Organization, startDateBase: DateTime.UtcNow.AddDays(5)));
+
+			_syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsThatExist.Add(x.TargetOfficeGroupId));
+			_syncJobRepository.Jobs.ForEach(x => _graphGroupRepository.GroupsGMMOwns.Add(x.TargetOfficeGroupId));
+
+			var response = await _jobTriggerService.GetSyncJobsAsync();
+			var jobTriggerThresholdExceeded = response.jobTriggerThresholdExceeded;
+			Assert.AreEqual(false, jobTriggerThresholdExceeded);
+		}
+
+		private class MockEmail<T> : IEmailSenderRecipient
         {
             public string SenderAddress => "";
 

@@ -5,6 +5,7 @@ using Azure;
 using Azure.Data.Tables;
 using DIConcreteTypes;
 using Microsoft.Extensions.Options;
+using Models;
 using Models.ThresholdNotifications;
 using Repositories.Contracts;
 using System;
@@ -25,6 +26,7 @@ namespace Repositories.NotificationsRepository
             _log = logger ?? throw new ArgumentNullException(nameof(logger));
             _tableClient = new TableClient(notificationRepoCredentials.Value.ConnectionString, notificationRepoCredentials.Value.TableName);
         }
+
         public async Task<ThresholdNotification> GetThresholdNotificationByIdAsync(Guid notificationId)
         {
             try
@@ -39,6 +41,24 @@ namespace Repositories.NotificationsRepository
                     throw ex;
                 }
             }
+            return null;
+        }
+
+        public async Task<ThresholdNotification> GetThresholdNotificationBySyncJobIdAsync(Guid syncJobId)
+        {
+            var resolutionNameString = ThresholdNotificationResolution.Unresolved.ToString();
+            var queryResult = _tableClient.QueryAsync<ThresholdNotificationEntity>(x =>
+                x.SyncJobId == syncJobId && x.ResolutionName == resolutionNameString);
+
+            await foreach (var segmentResult in queryResult.AsPages())
+            {
+                var results = segmentResult.Values;
+                if (results.Count() > 0)
+                {
+                    return ToModel(results.ElementAt(0));
+                }
+            }
+
             return null;
         }
 
@@ -76,6 +96,9 @@ namespace Repositories.NotificationsRepository
             return new ThresholdNotification
             {
                 Id = entity.Id,
+                SyncJobPartitionKey = entity.SyncJobId.ToString(),
+                SyncJobRowKey = entity.SyncJobId.ToString(),
+                SyncJobId = entity.SyncJobId,
                 ChangePercentageForAdditions = entity.ChangePercentageForAdditions,
                 ChangePercentageForRemovals = entity.ChangePercentageForRemovals,
                 ChangeQuantityForAdditions = entity.ChangeQuantityForAdditions,
@@ -85,9 +108,11 @@ namespace Repositories.NotificationsRepository
                 ResolvedByUPN = entity.ResolvedByUPN,
                 ResolvedTime = entity.ResolvedTime,
                 Status = entity.Status.GetValueOrDefault(),
+                CardState = entity.CardState.GetValueOrDefault(),
                 TargetOfficeGroupId = entity.TargetOfficeGroupId,
                 ThresholdPercentageForAdditions = entity.ThresholdPercentageForAdditions,
-                ThresholdPercentageForRemovals = entity.ThresholdPercentageForRemovals
+                ThresholdPercentageForRemovals = entity.ThresholdPercentageForRemovals,
+                LastUpdatedTime = entity.Timestamp?.UtcDateTime ?? DateTime.MinValue
             };
         }
 
@@ -98,13 +123,19 @@ namespace Repositories.NotificationsRepository
                 PartitionKey = _thresholdNotificationPartitionKey,
                 RowKey = entity.Id.ToString(),
                 Id = entity.Id,
+                SyncJobPartitionKey = entity.SyncJobId.ToString(),
+                SyncJobRowKey = entity.SyncJobId.ToString(),
+                SyncJobId = entity.SyncJobId,
                 ChangePercentageForAdditions = entity.ChangePercentageForAdditions,
                 ChangePercentageForRemovals = entity.ChangePercentageForRemovals,
+                ChangeQuantityForAdditions = entity.ChangeQuantityForAdditions,
+                ChangeQuantityForRemovals = entity.ChangeQuantityForRemovals,
                 CreatedTime = entity.CreatedTime,
                 Resolution = entity.Resolution,
                 ResolvedByUPN = entity.ResolvedByUPN,
                 ResolvedTime = entity.ResolvedTime,
                 Status = entity.Status,
+                CardState = entity.CardState,
                 TargetOfficeGroupId = entity.TargetOfficeGroupId,
                 ThresholdPercentageForAdditions = entity.ThresholdPercentageForAdditions,
                 ThresholdPercentageForRemovals = entity.ThresholdPercentageForRemovals

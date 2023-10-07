@@ -12,6 +12,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.ApplicationInsights;
+using System.Data.SqlTypes;
 
 namespace Services
 {
@@ -24,7 +26,7 @@ namespace Services
         private const string SyncThresholdBothEmailBody = "SyncThresholdBothEmailBody";
         private const string SyncThresholdDisablingJobEmailSubject = "SyncThresholdDisablingJobEmailSubject";
 
-        private readonly ISyncJobRepository _syncJobRepository;
+        private readonly IDatabaseSyncJobsRepository _syncJobRepository;
         private readonly ILoggingRepository _loggingRepository;
         private readonly IEmailSenderRecipient _emailSenderAndRecipients;
         private readonly IGraphAPIService _graphAPIService;
@@ -34,6 +36,7 @@ namespace Services
         private readonly INotificationRepository _notificationRepository;
         private readonly bool _isDryRunEnabled;
         private readonly IThresholdNotificationConfig _thresholdNotificationConfig;
+        private readonly TelemetryClient _telemetryClient;
 
         private Guid _runId;
         public Guid RunId
@@ -47,7 +50,7 @@ namespace Services
         }
 
         public DeltaCalculatorService(
-            ISyncJobRepository syncJobRepository,
+            IDatabaseSyncJobsRepository syncJobRepository,
             ILoggingRepository loggingRepository,
             IEmailSenderRecipient emailSenderAndRecipients,
             IGraphAPIService graphAPIService,
@@ -56,7 +59,8 @@ namespace Services
             IThresholdNotificationConfig thresholdNotificationConfig,
             IGMMResources gmmResources,
             ILocalizationRepository localizationRepository,
-            INotificationRepository notificationRepository
+            INotificationRepository notificationRepository,
+            TelemetryClient telemetryClient
             )
         {
             _emailSenderAndRecipients = emailSenderAndRecipients ?? throw new ArgumentNullException(nameof(emailSenderAndRecipients));
@@ -69,6 +73,7 @@ namespace Services
             _localizationRepository = localizationRepository ?? throw new ArgumentNullException(nameof(localizationRepository));
             _notificationRepository = notificationRepository ?? throw new ArgumentNullException(nameof(notificationRepository));
             _isDryRunEnabled = dryRun != null && dryRun.DryRunEnabled;
+            _telemetryClient = telemetryClient ?? throw new ArgumentNullException(nameof(telemetryClient));
         }
 
         public async Task<DeltaResponse> CalculateDifferenceAsync(GroupMembership sourceMembership, GroupMembership destinationMembership)
@@ -78,10 +83,10 @@ namespace Services
                 MembershipDeltaStatus = MembershipDeltaStatus.Ok
             };
 
-            var job = await _syncJobRepository.GetSyncJobAsync(sourceMembership.SyncJobPartitionKey, sourceMembership.SyncJobRowKey);
+            var job = await _syncJobRepository.GetSyncJobAsync(sourceMembership.SyncJobId);
             if (job == null)
             {
-                await _loggingRepository.LogMessageAsync(new LogMessage { Message = $"Sync job : Partition key {sourceMembership.SyncJobPartitionKey}, Row key {sourceMembership.SyncJobRowKey} was not found!", RunId = sourceMembership.RunId });
+                await _loggingRepository.LogMessageAsync(new LogMessage { Message = $"Sync job : Id {sourceMembership.SyncJobId} was not found!", RunId = sourceMembership.RunId });
                 deltaResponse.MembershipDeltaStatus = MembershipDeltaStatus.Error;
                 return deltaResponse;
             }
@@ -97,7 +102,7 @@ namespace Services
 
             await _loggingRepository.LogMessageAsync(new LogMessage
             {
-                Message = $"Processing sync job : Partition key {sourceMembership.SyncJobPartitionKey} , Row key {sourceMembership.SyncJobRowKey}",
+                Message = $"Processing sync job : Id {sourceMembership.SyncJobId}",
                 RunId = sourceMembership.RunId
             });
 
@@ -124,7 +129,7 @@ namespace Services
             if (deltaResponse.MembershipDeltaStatus == MembershipDeltaStatus.Ok)
             {
                 var delta = await CalculateDeltaAsync(sourceMembership, destinationMembership, fromto, job);
-                var isInitialSync = job.LastRunTime == DateTime.FromFileTimeUtc(0);
+                var isInitialSync = job.LastRunTime == SqlDateTime.MinValue.Value;
                 var threshold = isInitialSync ? new ThresholdResult() : await CalculateThresholdAsync(job, delta.Delta, delta.TotalMembersCount, sourceMembership.RunId);
 
                 deltaResponse.MembersToAdd = delta.Delta.ToAdd;
@@ -133,38 +138,25 @@ namespace Services
                 if (threshold.IsThresholdExceeded)
                 {
                     deltaResponse.MembershipDeltaStatus = job.IgnoreThresholdOnce ? MembershipDeltaStatus.Ok : MembershipDeltaStatus.ThresholdExceeded;
+                    TrackThresholdViolationEvent(job.TargetOfficeGroupId);
 
                     if (job.IgnoreThresholdOnce)
                         await LogIgnoreThresholdOnceAsync(job, sourceMembership.RunId);
+                    else if (job.AllowEmptyDestination && (delta.Delta.ToAdd.Count > 0 && delta.TotalMembersCount == 0))
+                    {
+                        deltaResponse.MembershipDeltaStatus = MembershipDeltaStatus.Ok;
+                        await LogAllowEmptyDestinationAsync(job, sourceMembership.RunId);
+                    }
                     else
                     {
-                        if(_thresholdNotificationConfig.IsThresholdNotificationEnabled)
-                        {
-                            var thresholdNotification = new Models.ThresholdNotifications.ThresholdNotification { 
-                                Id = Guid.NewGuid(),
-                                ChangePercentageForAdditions = (int)threshold.IncreaseThresholdPercentage,
-                                ChangePercentageForRemovals = (int)threshold.DecreaseThresholdPercentage,
-                                ChangeQuantityForAdditions = delta.Delta.ToAdd.Count,
-                                ChangeQuantityForRemovals = delta.Delta.ToRemove.Count,
-                                CreatedTime = DateTime.UtcNow,
-                                Resolution = ThresholdNotificationResolution.Unresolved,
-                                ResolvedByUPN = string.Empty,
-                                ResolvedTime = DateTime.FromFileTimeUtc(0),
-                                Status = ThresholdNotificationStatus.Queued,
-                                TargetOfficeGroupId = job.TargetOfficeGroupId,
-                                ThresholdPercentageForAdditions = job.ThresholdPercentageForAdditions,
-                                ThresholdPercentageForRemovals = job.ThresholdPercentageForRemovals
-                            };
-
-                            await _notificationRepository.SaveNotificationAsync(thresholdNotification);
-                        }
-                        else
-                        {
-                            await SendThresholdNotificationAsync(threshold, job, sourceMembership.RunId);
-                        }
+                        await SendThresholdNotificationAsync(threshold, job, sourceMembership.RunId, delta.Delta);
                     }
 
                     return deltaResponse;
+                }
+                else if(job.ThresholdViolations > 0)
+                {
+                    await CloseUnresolvedThresholdNotificationAsync(job);
                 }
 
                 if (isDryRunSync)
@@ -278,11 +270,19 @@ namespace Services
             });
         }
 
-        private async Task SendThresholdNotificationAsync(ThresholdResult threshold, SyncJob job, Guid runId)
+        private async Task LogAllowEmptyDestinationAsync(SyncJob job, Guid runId)
+        {
+            await _loggingRepository.LogMessageAsync(new LogMessage
+            {
+                Message = $"Going to sync the job even though threshold exceeded because AllowEmptyDestination is currently set to {job.AllowEmptyDestination}.",
+                RunId = runId
+            });
+        }
+
+        private async Task SendThresholdNotificationAsync(ThresholdResult threshold, SyncJob job, Guid runId, MembershipDelta<AzureADUser> delta)
         {
             var currentThresholdViolations = job.ThresholdViolations + 1;
-            var followUpLimit = _thresholdConfig.NumberOfThresholdViolationsToNotify + _thresholdConfig.NumberOfThresholdViolationsFollowUps;
-            var sendNotification = currentThresholdViolations >= _thresholdConfig.NumberOfThresholdViolationsToNotify && currentThresholdViolations <= followUpLimit;
+            var sendNotification = currentThresholdViolations >= _thresholdConfig.NumberOfThresholdViolationsToNotify;
             var sendDisableJobNotification = currentThresholdViolations == _thresholdConfig.NumberOfThresholdViolationsToDisableJob;
 
             var groupName = await _graphAPIService.GetGroupNameAsync(job.TargetOfficeGroupId);
@@ -297,13 +297,71 @@ namespace Services
                 return;
             }
 
+            if (_thresholdNotificationConfig.IsThresholdNotificationEnabled)
+            {
+                await SendActionableEmailNotification(threshold, job, delta, sendDisableJobNotification);
+            }
+            else
+            {
+                await SendNormalThresholdEmail(threshold, job, runId, groupName, sendDisableJobNotification);
+            }
+        }
+
+        private async Task SendActionableEmailNotification(ThresholdResult threshold, SyncJob job, MembershipDelta<AzureADUser> delta, bool sendDisableJobNotification)
+        {
+            var thresholdNotification = await _notificationRepository.GetThresholdNotificationBySyncJobIdAsync(job.Id);
+
+            if (thresholdNotification == null)
+            {
+                thresholdNotification = new ThresholdNotification
+                {
+                    Id = Guid.NewGuid(),
+                    SyncJobPartitionKey = job.Id.ToString(),
+                    SyncJobRowKey = job.Id.ToString(),        
+                    SyncJobId = job.Id,
+                    ChangePercentageForAdditions = (int)threshold.IncreaseThresholdPercentage,
+                    ChangePercentageForRemovals = (int)threshold.DecreaseThresholdPercentage,
+                    ChangeQuantityForAdditions = delta.ToAdd.Count,
+                    ChangeQuantityForRemovals = delta.ToRemove.Count,
+                    CreatedTime = DateTime.UtcNow,
+                    Resolution = ThresholdNotificationResolution.Unresolved,
+                    ResolvedByUPN = string.Empty,
+                    ResolvedTime = DateTime.FromFileTimeUtc(0),
+                    Status = ThresholdNotificationStatus.Queued,
+                    CardState = ThresholdNotificationCardState.DefaultCard,
+                    TargetOfficeGroupId = job.TargetOfficeGroupId,
+                    ThresholdPercentageForAdditions = job.ThresholdPercentageForAdditions,
+                    ThresholdPercentageForRemovals = job.ThresholdPercentageForRemovals
+                };
+            }
+            else
+            {
+                thresholdNotification.ChangePercentageForAdditions = (int)threshold.IncreaseThresholdPercentage;
+                thresholdNotification.ChangePercentageForRemovals = (int)threshold.DecreaseThresholdPercentage;
+                thresholdNotification.ChangeQuantityForAdditions = delta.ToAdd.Count;
+                thresholdNotification.ChangeQuantityForRemovals = delta.ToRemove.Count;
+                thresholdNotification.ThresholdPercentageForAdditions = job.ThresholdPercentageForAdditions;
+                thresholdNotification.ThresholdPercentageForRemovals = job.ThresholdPercentageForRemovals;
+                thresholdNotification.Status = ThresholdNotificationStatus.Queued;
+
+                if (sendDisableJobNotification)
+                {
+                    thresholdNotification.CardState = ThresholdNotificationCardState.DisabledCard;
+                }
+            }
+
+            await _notificationRepository.SaveNotificationAsync(thresholdNotification);
+        }
+
+        private async Task SendNormalThresholdEmail(ThresholdResult threshold, SyncJob job, Guid runId, string groupName, bool sendDisableJobNotification)
+        {
             var emailSubject = SyncThresholdEmailSubject;
 
             string contentTemplate;
             string[] additionalContent;
             string[] additionalSubjectContent = new[] { job.TargetOfficeGroupId.ToString(), groupName };
 
-            var thresholdEmail = GetThresholdEmail(groupName, threshold, job);
+            var thresholdEmail = GetNormalThresholdEmail(groupName, threshold, job);
             contentTemplate = thresholdEmail.ContentTemplate;
             additionalContent = thresholdEmail.AdditionalContent;
 
@@ -339,7 +397,24 @@ namespace Services
                     additionalSubjectParams: additionalSubjectContent);
         }
 
-        private (string ContentTemplate, string[] AdditionalContent) GetThresholdEmail(string groupName, ThresholdResult threshold, SyncJob job)
+        private async Task CloseUnresolvedThresholdNotificationAsync(SyncJob job)
+        {
+            if (_thresholdNotificationConfig.IsThresholdNotificationEnabled)
+            {
+                var thresholdNotification = await _notificationRepository.GetThresholdNotificationBySyncJobIdAsync(job.Id);
+                if (thresholdNotification != null && thresholdNotification.Status != ThresholdNotificationStatus.Resolved)
+                {
+                    thresholdNotification.Resolution = ThresholdNotificationResolution.SelfCorrected;
+                    thresholdNotification.ResolvedByUPN = "N/A";
+                    thresholdNotification.ResolvedTime = DateTime.UtcNow;
+                    thresholdNotification.Status = ThresholdNotificationStatus.Resolved;
+
+                    await _notificationRepository.SaveNotificationAsync(thresholdNotification);
+                }
+            }
+        }
+
+        private (string ContentTemplate, string[] AdditionalContent) GetNormalThresholdEmail(string groupName, ThresholdResult threshold, SyncJob job)
         {
             string increasedThresholdMessage;
             string decreasedThresholdMessage;
@@ -371,7 +446,7 @@ namespace Services
             {
                 additionalContent = new[]
                 {
-                      job.TargetOfficeGroupId.ToString(), 
+                      job.TargetOfficeGroupId.ToString(),
                       groupName,
                       $"{increasedThresholdMessage}\n",
                       _gmmResources.LearnMoreAboutGMMUrl,
@@ -417,6 +492,14 @@ namespace Services
             }
 
             return recipients;
+        }
+        private void TrackThresholdViolationEvent(Guid groupId)
+        {
+            var thresholdViolationEvent = new Dictionary<string, string>
+            {
+                { "TargetGroupId", groupId.ToString() }
+            };
+            _telemetryClient.TrackEvent("ThresholdViolation", thresholdViolationEvent);
         }
     }
 }

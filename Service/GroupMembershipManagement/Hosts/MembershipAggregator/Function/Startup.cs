@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+using Azure.Messaging.ServiceBus;
 using Common.DependencyInjection;
 using DIConcreteTypes;
 using Hosts.FunctionBase;
@@ -12,6 +13,7 @@ using Repositories.BlobStorage;
 using Repositories.Contracts;
 using Repositories.Contracts.InjectConfig;
 using Repositories.GraphGroups;
+using Repositories.ServiceBusTopics;
 using Services;
 using Services.Contracts;
 
@@ -60,6 +62,14 @@ namespace Hosts.MembershipAggregator
                 var containerName = configuration["membershipContainerName"];
 
                 return new BlobStorageRepository($"https://{storageAccountName}.blob.core.windows.net/{containerName}");
+            })
+            .AddSingleton<IServiceBusTopicsRepository>(services =>
+            {
+                var configuration = services.GetRequiredService<IConfiguration>();
+                var membershipAggregatorQueue = configuration["serviceBusMembershipUpdatersTopic"];
+                var client = services.GetRequiredService<ServiceBusClient>();
+                var sender = client.CreateSender(membershipAggregatorQueue);
+                return new ServiceBusTopicsRepository(sender);
             });
         }
 

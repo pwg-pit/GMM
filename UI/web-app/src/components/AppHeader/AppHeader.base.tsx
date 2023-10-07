@@ -1,16 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.import React from "react";
 
-import { classNamesFunction, IProcessedStyleSet } from "@fluentui/react";
-import { useTheme } from "@fluentui/react/lib/Theme";
-import WelcomeName from "../WelcomeName";
-import AddOwner from "../AddOwner";
-import SignInSignOutButton from "../SignInSignOutButton";
+import { classNamesFunction, IButtonStyles, IconButton, IPersonaSharedProps, IProcessedStyleSet, IStyle, Persona, PersonaSize, useTheme } from '@fluentui/react';
+import { useTranslation } from 'react-i18next';
 import {
-  IAppHeaderProps,
-  IAppHeaderStyleProps,
-  IAppHeaderStyles,
-} from "./AppHeader.types";
+  type IAppHeaderProps,
+  type IAppHeaderStyleProps,
+  type IAppHeaderStyles,
+} from './AppHeader.types';
+import { useDispatch, useSelector } from 'react-redux';
+import { AppDispatch } from '../../store';
+import { useEffect } from 'react';
+import { selectProfilePhoto } from '../../store/profile.slice';
+import { getProfilePhoto } from '../../store/profile.api';
+import logo from '../../logo.svg';
 
 const getClassNames = classNamesFunction<
   IAppHeaderStyleProps,
@@ -21,20 +24,49 @@ export const AppHeaderBase: React.FunctionComponent<IAppHeaderProps> = (
   props: IAppHeaderProps
 ) => {
   const { className, styles } = props;
+  const theme = useTheme();
+  const { t } = useTranslation();
   const classNames: IProcessedStyleSet<IAppHeaderStyles> = getClassNames(
     styles,
     {
       className,
-      theme: useTheme(),
+      theme
     }
   );
 
+  const dispatch = useDispatch<AppDispatch>();
+  const profilePhoto = useSelector(selectProfilePhoto);
+
+  useEffect(() => {
+    if (!profilePhoto) {
+      dispatch(getProfilePhoto());
+    }
+  }, [dispatch, profilePhoto]);
+  
+  const personaProps: IPersonaSharedProps = {
+    imageUrl: profilePhoto
+  }
+
+  const disabledStyles: IStyle = {
+    background: theme.palette.themePrimary,
+    color: theme.palette.white
+  }
+  const buttonStyles: IButtonStyles = {
+    rootHovered: disabledStyles,
+    rootPressed: disabledStyles
+  }
+
   return (
-    <header>
-      <div className={classNames.root} role="banner" aria-label="header">
-        <WelcomeName></WelcomeName>
-        <AddOwner />
-        <SignInSignOutButton/>
+    <header className={classNames.root}>
+      <div className={classNames.titleContainer}>
+        <div className={classNames.appIcon}>
+          <img src={logo} alt="Membership Management Icon"  style={{ height: 32, width: 32 }} />
+        </div>
+        <div className={classNames.appTitle}>{t('membershipManagement')}</div>
+      </div>
+      <div className={classNames.settingsContainer}>
+          {/* <IconButton iconProps={{iconName: 'settings'}} className={classNames.settingsIcon} styles={buttonStyles} /> // Hidden until feature is enabled*/}
+          <Persona size={PersonaSize.size32} className={classNames.userPersona} {...personaProps} />
       </div>
     </header>
   );

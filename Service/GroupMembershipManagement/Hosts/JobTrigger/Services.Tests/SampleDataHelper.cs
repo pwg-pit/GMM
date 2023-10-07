@@ -3,6 +3,7 @@
 using Models;
 using System;
 using System.Collections.Generic;
+using System.Data.SqlTypes;
 using System.Linq;
 
 namespace Services.Tests
@@ -18,6 +19,7 @@ namespace Services.Tests
                 var job = new SyncJob
                 {
                     Requestor = $"requestor_{i}@email.com",
+                    Id = Guid.NewGuid(),
                     PartitionKey = DateTime.UtcNow.ToString("MMddyyyy"),
                     RowKey = Guid.NewGuid().ToString(),
                     Period = period,
@@ -25,8 +27,9 @@ namespace Services.Tests
                     StartDate = startDateBase ?? DateTime.UtcNow.AddDays(-1),
                     Status = SyncStatus.Idle.ToString(),
                     TargetOfficeGroupId = Guid.NewGuid(),
-                    LastRunTime = lastRunTime ?? DateTime.FromFileTimeUtc(0),
-                    RunId = Guid.NewGuid()
+                    LastRunTime = lastRunTime ?? SqlDateTime.MinValue.Value,
+                    RunId = Guid.NewGuid(),
+                    Destination = $"[{{\"type\":\"GroupMembership\",\"value\":{{\"objectId\":\"{Guid.NewGuid()}\"}}}}]"
                 };
 
                 jobs.Add(job);

@@ -36,8 +36,8 @@ namespace Hosts.Notifier
             {
                 foreach(var notification in notifications)
                 {
-                    await context.CallActivityAsync(nameof(UpdateNotificationStatusFunction), new UpdateNotificationStatusRequest { Notification = notification, Status = ThresholdNotificationStatus.Queued });
-                    await context.CallActivityAsync(nameof(SendNotificationFunction), notification.TargetOfficeGroupId);
+                    await context.CallActivityAsync(nameof(UpdateNotificationStatusFunction), new UpdateNotificationStatusRequest { Notification = notification, Status = ThresholdNotificationStatus.Triggered });
+                    await context.CallActivityAsync(nameof(SendNotificationFunction), notification);
                     await context.CallActivityAsync(nameof(UpdateNotificationStatusFunction), new UpdateNotificationStatusRequest { Notification = notification, Status = ThresholdNotificationStatus.AwaitingResponse });
                 }
             }

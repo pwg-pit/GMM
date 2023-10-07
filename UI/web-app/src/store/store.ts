@@ -2,15 +2,18 @@
 // Licensed under the MIT license.
 
 import { configureStore } from '@reduxjs/toolkit';
+
+import accountReducer from './account.slice';
 import jobsReducer from './jobs.slice';
-import accountReducer from './account.slice'
-import ownerReducer from './owner.slice'
+import ownerReducer from './owner.slice';
+import profileReducer from './profile.slice';
 
 export const store = configureStore({
   reducer: {
     account: accountReducer,
     jobs: jobsReducer,
-    owner: ownerReducer
+    owner: ownerReducer,
+    profile: profileReducer
   }
 });
 

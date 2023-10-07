@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 using Models;
+using Newtonsoft.Json.Linq;
 using Repositories.Contracts;
 using Repositories.Contracts.InjectConfig;
 using Services.Contracts;
@@ -8,18 +9,24 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.ApplicationInsights;
 
 namespace Services
 {
-    public class JobTriggerService : IJobTriggerService
+	public class JobTriggerService : IJobTriggerService
     {
         private const string EmailSubject = "EmailSubject";
         private const string SyncDisabledNoGroupEmailBody = "SyncDisabledNoGroupEmailBody";
         private const string SyncDisabledNoOwnerEmailBody = "SyncDisabledNoOwnerEmailBody";
         private const int JobsBatchSize = 20;
+        enum Metric
+        {
+            SyncJobsCount,
+            TotalSyncJobsCount
+        }
 
         private readonly ILoggingRepository _loggingRepository;
-        private readonly ISyncJobRepository _syncJobRepository;
+        private readonly IDatabaseSyncJobsRepository _databaseSyncJobsRepository;
         private readonly IServiceBusTopicsRepository _serviceBusTopicsRepository;
         private readonly IGraphGroupRepository _graphGroupRepository;
         private readonly string _gmmAppId;
@@ -27,6 +34,7 @@ namespace Services
         private readonly IEmailSenderRecipient _emailSenderAndRecipients;
         private readonly IGMMResources _gmmResources;
         private readonly IJobTriggerConfig _jobTriggerConfig;
+        private readonly TelemetryClient _telemetryClient;
 
         private Guid _runId;
         public Guid RunId
@@ -41,44 +49,45 @@ namespace Services
 
         public JobTriggerService(
             ILoggingRepository loggingRepository,
-            ISyncJobRepository syncJobRepository,
+            IDatabaseSyncJobsRepository databaseSyncJobsRepository,
             IServiceBusTopicsRepository serviceBusTopicsRepository,
             IGraphGroupRepository graphGroupRepository,
             IKeyVaultSecret<IJobTriggerService> gmmAppId,
             IMailRepository mailRepository,
             IEmailSenderRecipient emailSenderAndRecipients,
             IGMMResources gmmResources,
-            IJobTriggerConfig jobTriggerConfig
+            IJobTriggerConfig jobTriggerConfig,
+            TelemetryClient telemetryClient
             )
         {
             _emailSenderAndRecipients = emailSenderAndRecipients;
             _loggingRepository = loggingRepository ?? throw new ArgumentNullException(nameof(loggingRepository));
-            _syncJobRepository = syncJobRepository ?? throw new ArgumentNullException(nameof(syncJobRepository));
+            _databaseSyncJobsRepository = databaseSyncJobsRepository ?? throw new ArgumentNullException(nameof(databaseSyncJobsRepository));
             _serviceBusTopicsRepository = serviceBusTopicsRepository ?? throw new ArgumentNullException(nameof(serviceBusTopicsRepository));
             _graphGroupRepository = graphGroupRepository ?? throw new ArgumentNullException(nameof(graphGroupRepository));
             _gmmAppId = gmmAppId.Secret;
             _mailRepository = mailRepository ?? throw new ArgumentNullException(nameof(mailRepository));
             _gmmResources = gmmResources ?? throw new ArgumentNullException(nameof(gmmResources));
             _jobTriggerConfig = jobTriggerConfig ?? throw new ArgumentNullException(nameof(jobTriggerConfig));
+            _telemetryClient = telemetryClient ?? throw new ArgumentNullException(nameof(telemetryClient));
         }
 
-        public async Task<Models.Page<SyncJob>> GetSyncJobsSegmentAsync(string query, string continuationToken)
+        public async Task<(List<SyncJob> jobs, bool jobTriggerThresholdExceeded)> GetSyncJobsAsync()
         {
-            if (string.IsNullOrWhiteSpace(continuationToken))
-            {
-                var firstPage = await _syncJobRepository.GetPageableQueryResultAsync(false, JobsBatchSize, SyncStatus.Idle, SyncStatus.InProgress, SyncStatus.StuckInProgress);
-                firstPage.Values = ApplyJobTriggerFilters(firstPage.Values).ToList();
-                return firstPage;
-            }
-
-            var nextPage = await _syncJobRepository.GetSyncJobsSegmentAsync(query, continuationToken, JobsBatchSize);
-            nextPage.Values = ApplyJobTriggerFilters(nextPage.Values).ToList();
-            return nextPage;
+            var jobs = await _databaseSyncJobsRepository.GetSyncJobsAsync(false, SyncStatus.Idle, SyncStatus.InProgress, SyncStatus.StuckInProgress, SyncStatus.TransientError);
+            var filteredJobs = ApplyJobTriggerFilters(jobs).ToList();
+            var syncJobsCount = filteredJobs.Count;
+            var totalSyncJobsCount = await _databaseSyncJobsRepository.GetSyncJobCountAsync(true, SyncStatus.All);
+            _telemetryClient.TrackMetric(nameof(Metric.SyncJobsCount), syncJobsCount);
+            _telemetryClient.TrackMetric(nameof(Metric.TotalSyncJobsCount), totalSyncJobsCount);
+            var jobTriggerThresholdExceeded = HasJobTriggerThresholdExceeded(syncJobsCount, totalSyncJobsCount);
+            return (filteredJobs, jobTriggerThresholdExceeded);
         }
 
-        public async Task<string> GetGroupNameAsync(Guid groupId)
+        public async Task<string> GetGroupNameAsync(SyncJob job)
         {
-            return await _graphGroupRepository.GetGroupNameAsync(groupId);
+            var destinationObjectId = (await ParseAndValidateDestinationAsync(job)).DestinationObject.Value.ObjectId;
+            return await _graphGroupRepository.GetGroupNameAsync(destinationObjectId);
         }
 
         public async Task SendEmailAsync(SyncJob job, string emailSubjectTemplateName, string emailContentTemplateName, string[] additionalContentParameters, string templateDirectory = "")
@@ -88,7 +97,8 @@ namespace Services
 
             if (!SyncDisabledNoGroupEmailBody.Equals(emailContentTemplateName, StringComparison.InvariantCultureIgnoreCase))
             {
-                var owners = await _graphGroupRepository.GetGroupOwnersAsync(job.TargetOfficeGroupId);
+                var destinationObjectId = (await ParseAndValidateDestinationAsync(job)).DestinationObject.Value.ObjectId;
+                var owners = await _graphGroupRepository.GetGroupOwnersAsync(destinationObjectId);
                 ownerEmails = string.Join(";", owners.Where(x => !string.IsNullOrWhiteSpace(x.Mail)).Select(x => x.Mail));
             }
 
@@ -134,7 +144,7 @@ namespace Services
                 job.LastSuccessfulStartTime = DateTime.UtcNow;
             }
 
-            await _syncJobRepository.UpdateSyncJobStatusAsync(new[] { job }, status);
+            await _databaseSyncJobsRepository.UpdateSyncJobStatusAsync(new[] { job }, status);
         }
 
         public async Task SendMessageAsync(SyncJob job)
@@ -144,14 +154,16 @@ namespace Services
 
         public async Task<bool> GroupExistsAndGMMCanWriteToGroupAsync(SyncJob job, string templateDirectory = "")
         {
+            var destinationObjectId = (await ParseAndValidateDestinationAsync(job)).DestinationObject.Value.ObjectId;
+
             foreach (var strat in new JobVerificationStrategy[] {
-                new JobVerificationStrategy { TestFunction = _graphGroupRepository.GroupExists, StatusMessage = $"Destination group {job.TargetOfficeGroupId} exists.", ErrorMessage = $"destination group {job.TargetOfficeGroupId} doesn't exist.", EmailBody = SyncDisabledNoGroupEmailBody },
-                new JobVerificationStrategy { TestFunction = (groupId) => GMMCanWriteToGroupAsync(groupId), StatusMessage = $"GMM is an owner of destination group {job.TargetOfficeGroupId}.", ErrorMessage = $"GMM is not an owner of destination group {job.TargetOfficeGroupId}.", EmailBody = SyncDisabledNoOwnerEmailBody }})
+                new JobVerificationStrategy { TestFunction = _graphGroupRepository.GroupExists, StatusMessage = $"Destination group {destinationObjectId} exists.", ErrorMessage = $"destination group {destinationObjectId} doesn't exist.", EmailBody = SyncDisabledNoGroupEmailBody },
+                new JobVerificationStrategy { TestFunction = (groupId) => GMMCanWriteToGroupAsync(groupId), StatusMessage = $"GMM is an owner of destination group {destinationObjectId}.", ErrorMessage = $"GMM is not an owner of destination group {destinationObjectId}.", EmailBody = SyncDisabledNoOwnerEmailBody }})
             {
                 await _loggingRepository.LogMessageAsync(new LogMessage { RunId = job.RunId, Message = "Checking: " + strat.StatusMessage });
                 // right now, we stop after the first failed strategy, because it doesn't make sense to find that the destination group doesn't exist and then check if we own it.
                 // this can change in the future, when/if we have more than two things to check here.
-                if (await strat.TestFunction(job.TargetOfficeGroupId) == false)
+                if (await strat.TestFunction(destinationObjectId) == false)
                 {
                     await _loggingRepository.LogMessageAsync(new LogMessage { RunId = job.RunId, Message = "Marking sync job as failed because " + strat.ErrorMessage });
                     await _mailRepository.SendMailAsync(new EmailMessage
@@ -162,7 +174,7 @@ namespace Services
                         SenderPassword = _emailSenderAndRecipients.SenderPassword,
                         ToEmailAddresses = job.Requestor,
                         CcEmailAddresses = _emailSenderAndRecipients.SyncDisabledCCAddresses,
-                        AdditionalContentParams = new[] { job.TargetOfficeGroupId.ToString(), _emailSenderAndRecipients.SupportEmailAddresses }
+                        AdditionalContentParams = new[] { destinationObjectId.ToString(), _emailSenderAndRecipients.SupportEmailAddresses }
                     }, job.RunId, templateDirectory);
                     return false;
                 }
@@ -182,9 +194,53 @@ namespace Services
             return isAppIdOwner;
         }
 
-        public async Task<List<string>> GetGroupEndpointsAsync(Guid groupId)
+        public async Task<List<string>> GetGroupEndpointsAsync(SyncJob job)
         {
-            return await _graphGroupRepository.GetGroupEndpointsAsync(groupId);
+            var destinationObjectId = (await ParseAndValidateDestinationAsync(job)).DestinationObject.Value.ObjectId;
+            return await _graphGroupRepository.GetGroupEndpointsAsync(destinationObjectId);
+        }
+
+        public async Task<(bool IsValid, DestinationObject DestinationObject)> ParseAndValidateDestinationAsync(SyncJob syncJob)
+        {
+            if (string.IsNullOrWhiteSpace(syncJob.Destination)) return (false, null);
+
+            JObject destinationQuery = JArray.Parse(syncJob.Destination)[0] as JObject;
+            Guid objectIdGuid;
+            string type;
+
+            if (destinationQuery["value"] == null ||
+                destinationQuery["type"] == null ||
+                destinationQuery["value"].SelectToken("objectId") == null ||
+                !Guid.TryParse(destinationQuery["value"]["objectId"].Value<string>(), out objectIdGuid)) return (false, null);
+
+            type = destinationQuery["type"].Value<string>();
+
+            if (type == "TeamsChannel")
+            {
+                if (destinationQuery["value"].SelectToken("channelId") == null) return (false, null);
+
+                return (true, new DestinationObject
+                {
+                    Type = type,
+                    Value = new TeamsChannelDestinationValue
+                    {
+                        ObjectId = objectIdGuid,
+                        ChannelId = destinationQuery["value"]["channelId"].Value<string>()
+                    }
+                });
+            }
+            else if (type == "GroupMembership")
+            {
+                return (true, new DestinationObject
+                {
+                    Type = type,
+                    Value = new GroupDestinationValue
+                    {
+                        ObjectId = objectIdGuid,
+                    }
+                });
+            }
+            else { return (false, null); }
         }
 
         private class JobVerificationStrategy
@@ -204,5 +260,23 @@ namespace Services
             var inProgressSyncJobs = jobs.Where(x => ((DateTime.UtcNow - x.LastSuccessfulStartTime) > TimeSpan.FromHours(x.Period)) && x.Status == SyncStatus.InProgress.ToString());
             return allNonDryRunSyncJobs.Concat(allDryRunSyncJobs).Concat(inProgressSyncJobs);
         }
+
+        private bool HasJobTriggerThresholdExceeded(int syncJobsCount, int totalSyncJobsCount)
+            {
+                if (syncJobsCount < _jobTriggerConfig.JobCountThreshold)
+                {
+                    return false;
+                }
+                else if (syncJobsCount >= _jobTriggerConfig.JobCountThreshold)
+                {
+                    double percentage = ((double)syncJobsCount / totalSyncJobsCount) * 100;
+
+                    if (percentage >= _jobTriggerConfig.JobPercentThreshold)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
     }
 }

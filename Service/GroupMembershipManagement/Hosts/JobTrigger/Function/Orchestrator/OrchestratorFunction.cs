@@ -33,25 +33,7 @@ namespace Hosts.JobTrigger
                     Verbosity = VerbosityLevel.DEBUG
                 });
 
-            string query = null;
-            string continuationToken = null;
-            var syncJobs = new List<SyncJob>();
-
-            do
-            {
-                var segmentResponse = await context.CallActivityAsync<GetJobsSegmentedResponse>(nameof(GetJobsSegmentedFunction),
-                    new GetJobsSegmentedRequest
-                    {
-                        Query = query,
-                        ContinuationToken = continuationToken
-                    });
-
-                syncJobs.AddRange(segmentResponse.JobsSegment);
-
-                query = segmentResponse.Query;
-                continuationToken = segmentResponse.ContinuationToken;
-
-            } while (continuationToken != null);
+            var syncJobs =  await context.CallActivityAsync<List<SyncJob>>(nameof(GetJobsFunction), null);
 
             await context.CallActivityAsync(nameof(LoggerFunction),
              new LoggerRequest

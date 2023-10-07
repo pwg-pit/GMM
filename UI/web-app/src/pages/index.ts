@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-export * from './JobDetailsPage';
+export * from './JobDetails';
 export * from './JobsPage';
 export * from './OwnerPage';

@@ -6,7 +6,10 @@ using Microsoft.Graph;
 using Microsoft.Graph.Models;
 using Microsoft.Graph.Models.ODataErrors;
 using Microsoft.Kiota.Abstractions;
+using Microsoft.Kiota.Abstractions.Serialization;
+using Microsoft.Kiota.Serialization.Json;
 using Models;
+using Newtonsoft.Json;
 using Repositories.Contracts;
 using System;
 using System.Collections.Generic;
@@ -15,6 +18,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using static Microsoft.Graph.CoreConstants;
 
@@ -162,13 +166,57 @@ namespace Repositories.GraphGroups
             }
         }
 
+        public async Task<Dictionary<Guid, string>> GetGroupNamesAsync(List<Guid> groupIds)
+        {
+            var groupNames = new Dictionary<Guid, string>();
+            var batchRequest = new BatchRequestContentCollection(_graphServiceClient);
+
+            // requestId, groupId
+            var requestIdTracker = new Dictionary<string, Guid>();
+
+            foreach (var groupId in groupIds.Distinct())
+            {
+                var requestInformation = _graphServiceClient
+                                            .Groups[groupId.ToString()]
+                                            .ToGetRequestInformation(requestConfiguration =>
+                                            {
+                                                requestConfiguration.QueryParameters.Select = new[] { "displayName" };
+                                            });
+
+
+
+                var requestId = await batchRequest.AddBatchRequestStepAsync(requestInformation);
+                requestIdTracker.Add(requestId, groupId);
+            }
+
+            var batchResponse = await _graphServiceClient.Batch.PostAsync(batchRequest);
+
+            foreach (var statusCodeResponse in await batchResponse.GetResponsesStatusCodesAsync())
+            {
+                using var response = await batchResponse.GetResponseByIdAsync(statusCodeResponse.Key);
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseHandler = new ResponseHandler<Group>();
+                    var group = await responseHandler.HandleResponseAsync<HttpResponseMessage, Group>(response, null);
+                    if (group != null)
+                        groupNames.Add(requestIdTracker[statusCodeResponse.Key], group.DisplayName);
+                }
+                else
+                {
+                    groupNames.Add(requestIdTracker[statusCodeResponse.Key], null);
+                }
+            }
+
+            return groupNames;
+        }
+
         public async Task<List<string>> GetGroupEndpointsAsync(Guid groupId, Guid? runId)
         {
             var endpoints = new List<string>();
 
             try
             {
-                var batchRequest = new BatchRequestContent(_graphServiceClient);
+                var batchRequest = new BatchRequestContentCollection(_graphServiceClient);
                 var outlookRequestInformation = _graphServiceClient
                                                     .Groups[groupId.ToString()]
                                                     .ToGetRequestInformation(requestConfiguration =>
@@ -275,14 +323,14 @@ namespace Repositories.GraphGroups
             {
                 foreach (var groupIdsChunk in groupIds.Distinct().Chunk(20))
                 {
-                    var batchRequest = new BatchRequestContent(_graphServiceClient);
+                    var batchRequest = new BatchRequestContentCollection(_graphServiceClient);
                     var requestIds = new Dictionary<string, Guid>();
 
                     foreach (var groupId in groupIdsChunk)
                     {
                         var getRequestInformation = _graphServiceClient.Groups[groupId.ToString()].ToGetRequestInformation(requestConfiguration =>
                         {
-                            requestConfiguration.QueryParameters.Select = new[] { "id", "mailEnabled", "groupTypes", "securityEnabled" };
+                            requestConfiguration.QueryParameters.Select = new[] { "id", "mailEnabled", "groupTypes", "securityEnabled", "displayName" };
                         });
 
                         var requestId = await batchRequest.AddBatchRequestStepAsync(getRequestInformation);
@@ -296,13 +344,14 @@ namespace Repositories.GraphGroups
                         var group = new AzureADGroup
                         {
                             ObjectId = requestIds[requestId],
-                            Type = "Unknown"
+                            Type = "Unknown",
                         };
 
-                        var graphGroup = await batchResponse.GetResponseByIdAsync<Group>(requestId);
+                        var graphGroupResonse = await batchResponse.GetResponseByIdAsync(requestId);
 
-                        if (graphGroup != null)
+                        if (graphGroupResonse.IsSuccessStatusCode)
                         {
+                            var graphGroup = await DeserializeResponseAsync(graphGroupResonse, Group.CreateFromDiscriminatorValue);
                             var isMailEnabled = graphGroup.MailEnabled ?? false;
                             var groupTypes = graphGroup.GroupTypes ?? new List<string>();
                             var isSecurityEnabled = graphGroup.SecurityEnabled ?? false;
@@ -318,6 +367,8 @@ namespace Repositories.GraphGroups
                                 group.Type = "Mail enabled security";
                             else if (!groupTypes.Any() && isMailEnabled && !isSecurityEnabled)
                                 group.Type = "Distribution";
+
+                            group.Name = graphGroup.DisplayName;
                         }
 
                         groups.Add(group);

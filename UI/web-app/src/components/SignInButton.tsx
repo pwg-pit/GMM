@@ -1,11 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { useMsal } from "@azure/msal-react";
+import { useMsal } from '@azure/msal-react';
 import { DefaultButton } from '@fluentui/react/lib/Button';
+import { useTranslation } from 'react-i18next';
 
 export const SignInButton = () => {
     const { instance } = useMsal();
+    const { t } = useTranslation();
 
     const handleSignIn = () => {
         instance.loginRedirect({
@@ -15,7 +17,7 @@ export const SignInButton = () => {
     
     return (
         <div>
-            <DefaultButton onClick={handleSignIn}>Sign in</DefaultButton>
+            <DefaultButton onClick={handleSignIn}>{t('signIn')}</DefaultButton>
         </div>
     )
 };

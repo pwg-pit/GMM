@@ -30,7 +30,7 @@ namespace Repositories.GraphGroups
         {
             // get the service principal ID by its app ID
             var nativeResponseHandler = new NativeResponseHandler();
-            var response = new ServicePrincipalCollectionResponse();
+            var response = new DirectoryObjectCollectionResponse();
 
             IDictionary<string, IEnumerable<string>> headers = null;
 
@@ -51,7 +51,7 @@ namespace Repositories.GraphGroups
             if (nativeResponse.IsSuccessStatusCode)
             {
                 response = await DeserializeResponseAsync(nativeResponse,
-                                                          ServicePrincipalCollectionResponse.CreateFromDiscriminatorValue);
+                                                          DirectoryObjectCollectionResponse.CreateFromDiscriminatorValue);
 
                 headers = nativeResponse.Headers.ToImmutableDictionary(x => x.Key, x => x.Value);
 
@@ -87,7 +87,7 @@ namespace Repositories.GraphGroups
             try
             {
                 var nativeResponseHandler = new NativeResponseHandler();
-                var groupOwnersResponse = new ServicePrincipalCollectionResponse();
+                var groupOwnersResponse = new DirectoryObjectCollectionResponse();
 
                 await _graphServiceClient.Groups[groupObjectId.ToString()].Owners.GetAsync(requestConfiguration =>
                 {
@@ -100,7 +100,7 @@ namespace Repositories.GraphGroups
                 if (nativeResponse.IsSuccessStatusCode)
                 {
                     groupOwnersResponse = await DeserializeResponseAsync(nativeResponse,
-                                                                         ServicePrincipalCollectionResponse.CreateFromDiscriminatorValue);
+                                                                         DirectoryObjectCollectionResponse.CreateFromDiscriminatorValue);
 
                     var headers = nativeResponse.Headers.ToImmutableDictionary(x => x.Key, x => x.Value);
 
@@ -151,11 +151,13 @@ namespace Repositories.GraphGroups
             {
                 user = await _graphServiceClient.Users[email].GetAsync();
             }
-            catch (ServiceException ex)
+            catch (ODataError ex)
             {
                 if (ex.ResponseStatusCode == (int)HttpStatusCode.NotFound)
                     return false;
-
+            }
+            catch (Exception ex)
+            {
                 await _loggingRepository.LogMessageAsync(new LogMessage
                 {
                     Message = ex.GetBaseException().ToString(),
@@ -164,6 +166,7 @@ namespace Repositories.GraphGroups
 
                 throw;
             }
+
 
             await _loggingRepository.LogMessageAsync(new LogMessage
             {
@@ -198,7 +201,8 @@ namespace Repositories.GraphGroups
 
                 var headers = nativeResponse.Headers.ToImmutableDictionary(x => x.Key, x => x.Value);
                 await _graphGroupMetricTracker.TrackMetricsAsync(headers, QueryType.Other, runId);
-                return groupOwnersResponse.Value.Any();
+
+                return groupOwnersResponse.Value?.Any() ?? false;
             }
             catch (ODataError ex)
             {

@@ -10,7 +10,7 @@ namespace Models
         Idle = 2,
         Error = 3,
         ThresholdExceeded = 4,
-        CustomMembershipDataNotFound = 5,
+        MembershipDataNotFound = 5,
         DestinationGroupNotFound = 6,
         NotOwnerOfDestinationGroup = 7,
         SecurityGroupNotFound = 8,
@@ -20,7 +20,12 @@ namespace Models
         CustomerPaused = 12,
         StuckInProgress = 13,
         ErroredDueToStuckInProgress = 14,
-        PrivateChannelNotDestination = 15,
-        TeamsChannelNotPrivate = 16,
+        TeamsChannelNotDestination = 15,
+        DestinationQueryNotValid = 16,
+        GuestUsersCannotBeAddedToUnifiedGroup = 17,
+        StandardTeamsChannel = 18,
+        TeamsChannelError = 19,
+        SchemaError = 20,
+        TransientError = 21
     }
 }

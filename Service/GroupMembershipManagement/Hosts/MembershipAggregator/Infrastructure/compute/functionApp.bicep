@@ -48,16 +48,28 @@ resource functionApp 'Microsoft.Web/sites@2018-02-01' = {
   }
 }
 
+resource snScmBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'scm'
+  properties: {
+    allow: false
+  }
+}
+
+resource snFtpBasicAuth 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2022-09-01' = {
+  parent: functionApp
+  name: 'ftp'
+  properties: {
+    allow: false
+  }
+}
+
 module secretsTemplate 'keyVaultSecrets.bicep' = {
   name: 'secretsTemplate-MembershipAggregator'
   scope: resourceGroup(dataKeyVaultResourceGroup)
   params: {
     keyVaultName: dataKeyVaultName
     keyVaultParameters: [
-      {
-        name: 'membershipAggregatorUrl'
-        value: 'https://${functionApp.properties.defaultHostName}/api/StarterFunction'
-      }
       {
         name: 'membershipAggregatorFunctionName'
         value: '${name}-MembershipAggregator'
@@ -66,33 +78,13 @@ module secretsTemplate 'keyVaultSecrets.bicep' = {
   }
 }
 
-module secureSecretsTemplate 'keyVaultSecretsSecure.bicep' = {
-  name: 'secureSecretsTemplate-MembershipAggregator'
-  scope: resourceGroup(dataKeyVaultResourceGroup)
-  params: {
-    keyVaultName: dataKeyVaultName
-    keyVaultSecrets: {
-      secrets: [
-        { 
-          name: 'membershipAggregatorFunctionKey'
-          value: listkeys('${functionApp.id}/host/default', '2018-11-01').functionKeys.default
-        }
-      ]
-    }
-  }
-}
-
-
-
 resource functionAppSlotConfig 'Microsoft.Web/sites/config@2021-03-01' = {
   name: 'slotConfigNames'
   parent: functionApp
   properties: {
     appSettingNames: [
-      'graphUpdaterUrl'
-      'graphUpdaterFunctionKey'
       'AzureFunctionsJobHost__extensions__durableTask__hubName'
-      'AzureWebJobs.StarterFunction.Disabled'
+      'AzureWebJobs.ServiceBusStarterFunction.Disabled'
       'AzureWebJobs.OrchestratorFunction.Disabled'
       'AzureWebJobs.MembershipSubOrchestratorFunction.Disabled'
       'AzureWebJobs.DeltaCalculatorFunction.Disabled'
@@ -101,6 +93,10 @@ resource functionAppSlotConfig 'Microsoft.Web/sites/config@2021-03-01' = {
       'AzureWebJobs.JobStatusUpdaterFunction.Disabled'
       'AzureWebJobs.JobTrackerEntity.Disabled'
       'AzureWebJobs.LoggerFunction.Disabled'
+      'AzureWebJobs.TelemetryTrackerFunction.Disabled'
+      'AzureWebJobs.TopicMessageSenderFunction.Disabled'
+      'AzureWebJobsStorage'
+      'AzureFunctionsWebHost__hostid'
     ]
   }
 }

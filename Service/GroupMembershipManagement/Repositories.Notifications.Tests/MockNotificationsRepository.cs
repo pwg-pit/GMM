@@ -24,6 +24,12 @@ namespace Repositories.Notifications.Tests
             await Task.CompletedTask;
         }
 
+        public async Task<ThresholdNotification> GetThresholdNotificationBySyncJobIdAsync(Guid syncJobId)
+        {
+            var thresholdNotification = ThresholdNotifications.FirstOrDefault(x => x.SyncJobId == syncJobId);
+            return await Task.FromResult(thresholdNotification);
+        }
+
         public IAsyncEnumerable<ThresholdNotification> GetQueuedNotificationsAsync()
         {
             throw new NotImplementedException();
